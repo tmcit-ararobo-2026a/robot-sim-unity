@@ -248,6 +248,10 @@ namespace RobotSim.Shooter
 
                 MeshRenderer mr = clothObj.AddComponent<MeshRenderer>();
                 mr.sharedMaterials = _cachedClothMats;
+
+                BoxCollider bc = clothObj.AddComponent<BoxCollider>();
+                bc.isTrigger = true;
+                bc.size = new Vector3(0.30f, 0.05f, 0.20f);
             }
             else
             {
