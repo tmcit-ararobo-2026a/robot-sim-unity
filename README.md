@@ -102,7 +102,8 @@ ros2 launch gn10_pointcloud_localization localization.launch.py use_sim_time:=tr
 ```bash
 source /opt/ros/humble/setup.bash && source ~/ros2_ws/install/setup.bash
 ros2 launch gn10_navigation navigation.launch.py use_sim_time:=true use_rviz:=true \
-  map_file_path:=/home/akeru/ros2_ws/src/gn10-navigation/config/nhk2026_map.json
+  map_file_path:=$(ros2 pkg prefix --share gn10_navigation)/config/nhk2026_map.json
+# （またはソースツリーから直接指定する場合: map_file_path:=$HOME/ros2_ws/src/gn10-navigation/config/nhk2026_map.json）
 ```
 
 #### 3. RealSense 布追跡 (`realsense_dust_cloth`)
