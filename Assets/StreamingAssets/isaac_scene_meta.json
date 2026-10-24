@@ -1,0 +1,1539 @@
+{
+  "robotInitialPositionUnity": [
+    -3.841951755700734,
+    0.02187333140496167,
+    -2.2759483577067146
+  ],
+  "realSenseLocalPositionUnity": [
+    0.0021212959923584407,
+    1.0005208715416238,
+    0.5856383777893663
+  ],
+  "releasePointLocalPositionUnity": [
+    0.002118747634887619,
+    1.1273921793737582,
+    0.5577878113443417
+  ],
+  "mid360LocalPositionUnity": [
+    -0.25748744278852165,
+    1.0681266685950388,
+    -0.1469444774246087
+  ],
+  "meshes": [
+    {
+      "name": "field_base",
+      "path": "/World/field/field_base/mesh",
+      "category": "field",
+      "vertexByteOffset": 0,
+      "vertexCount": 2476,
+      "submeshes": [
+        {
+          "indexByteOffset": 29712,
+          "indexCount": 1956,
+          "material": {
+            "name": "material__800000_0_494118_0_494118_0_000000_0_000000",
+            "color": [
+              0.800000011920929,
+              0.49410000443458557,
+              0.49410000443458557,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 37536,
+          "indexCount": 72,
+          "material": {
+            "name": "material__992157_0_709804_0_709804_0_000000_0_000000",
+            "color": [
+              0.9922000169754028,
+              0.7098000049591064,
+              0.7098000049591064,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 37824,
+          "indexCount": 1956,
+          "material": {
+            "name": "material__521569_0_666667_0_749020_0_000000_0_000000",
+            "color": [
+              0.5216000080108643,
+              0.666700005531311,
+              0.7490000128746033,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 45648,
+          "indexCount": 252,
+          "material": {
+            "name": "material__768627_0_207843_0_152941_0_000000_0_000000",
+            "color": [
+              0.7685999870300293,
+              0.2078000009059906,
+              0.15289999544620514,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 46656,
+          "indexCount": 252,
+          "material": {
+            "name": "material__188235_0_231373_0_588235_0_000000_0_000000",
+            "color": [
+              0.1881999969482422,
+              0.2313999980688095,
+              0.5881999731063843,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 47664,
+          "indexCount": 60,
+          "material": {
+            "name": "material__913725_0_647059_0_329412_0_000000_0_000000",
+            "color": [
+              0.9136999845504761,
+              0.6470999717712402,
+              0.3294000029563904,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 47904,
+          "indexCount": 72,
+          "material": {
+            "name": "material__768627_0_886275_0_952941_0_000000_0_000000",
+            "color": [
+              0.7685999870300293,
+              0.8863000273704529,
+              0.9528999924659729,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 48192,
+          "indexCount": 1872,
+          "material": {
+            "name": "material__901961_0_901961_0_901961_0_000000_0_000000",
+            "color": [
+              0.9020000100135803,
+              0.9020000100135803,
+              0.9020000100135803,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        }
+      ]
+    },
+    {
+      "name": "bucket1_blue",
+      "path": "/World/field/bucket1_blue/mesh",
+      "category": "field",
+      "vertexByteOffset": 55680,
+      "vertexCount": 602,
+      "submeshes": [
+        {
+          "indexByteOffset": 62904,
+          "indexCount": 1800,
+          "material": {
+            "name": "material__423529_0_768627_0_854902_0_000000_0_001",
+            "color": [
+              0.4235000014305115,
+              0.7685999870300293,
+              0.8549000024795532,
+              0.5
+            ],
+            "metallic": 1.0,
+            "smoothness": 0.8500000089406967
+          }
+        }
+      ]
+    },
+    {
+      "name": "bucket1_red",
+      "path": "/World/field/bucket1_red/mesh",
+      "category": "field",
+      "vertexByteOffset": 70104,
+      "vertexCount": 602,
+      "submeshes": [
+        {
+          "indexByteOffset": 77328,
+          "indexCount": 1800,
+          "material": {
+            "name": "material__423529_0_768627_0_854902_0_000000_0_001",
+            "color": [
+              0.4235000014305115,
+              0.7685999870300293,
+              0.8549000024795532,
+              0.5
+            ],
+            "metallic": 1.0,
+            "smoothness": 0.8500000089406967
+          }
+        }
+      ]
+    },
+    {
+      "name": "desk1_red",
+      "path": "/World/field/desk1_red/mesh",
+      "category": "field",
+      "vertexByteOffset": 84528,
+      "vertexCount": 8814,
+      "submeshes": [
+        {
+          "indexByteOffset": 190296,
+          "indexCount": 8448,
+          "material": {
+            "name": "material__000000_0_000000_0_000000_0_000000_0_000000",
+            "color": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 224088,
+          "indexCount": 1140,
+          "material": {
+            "name": "material__909804_0_572549_0_164706_0_000000_0_000000",
+            "color": [
+              0.9097999930381775,
+              0.5724999904632568,
+              0.1647000014781952,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 228648,
+          "indexCount": 28476,
+          "material": {
+            "name": "material__701961_0_701961_0_701961_0_000000_0_000000",
+            "color": [
+              0.7020000219345093,
+              0.7020000219345093,
+              0.7020000219345093,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        }
+      ]
+    },
+    {
+      "name": "desk1_blue",
+      "path": "/World/field/desk1_blue/mesh",
+      "category": "field",
+      "vertexByteOffset": 342552,
+      "vertexCount": 8814,
+      "submeshes": [
+        {
+          "indexByteOffset": 448320,
+          "indexCount": 8448,
+          "material": {
+            "name": "material__000000_0_000000_0_000000_0_000000_0_000000",
+            "color": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 482112,
+          "indexCount": 1140,
+          "material": {
+            "name": "material__909804_0_572549_0_164706_0_000000_0_000000",
+            "color": [
+              0.9097999930381775,
+              0.5724999904632568,
+              0.1647000014781952,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 486672,
+          "indexCount": 28476,
+          "material": {
+            "name": "material__701961_0_701961_0_701961_0_000000_0_000000",
+            "color": [
+              0.7020000219345093,
+              0.7020000219345093,
+              0.7020000219345093,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        }
+      ]
+    },
+    {
+      "name": "bucket2_red",
+      "path": "/World/field/bucket2_red/mesh",
+      "category": "field",
+      "vertexByteOffset": 600576,
+      "vertexCount": 602,
+      "submeshes": [
+        {
+          "indexByteOffset": 607800,
+          "indexCount": 1800,
+          "material": {
+            "name": "material__423529_0_768627_0_854902_0_000000_0_001",
+            "color": [
+              0.4235000014305115,
+              0.7685999870300293,
+              0.8549000024795532,
+              0.5
+            ],
+            "metallic": 1.0,
+            "smoothness": 0.8500000089406967
+          }
+        }
+      ]
+    },
+    {
+      "name": "bucket2_blue",
+      "path": "/World/field/bucket2_blue/mesh",
+      "category": "field",
+      "vertexByteOffset": 615000,
+      "vertexCount": 602,
+      "submeshes": [
+        {
+          "indexByteOffset": 622224,
+          "indexCount": 1800,
+          "material": {
+            "name": "material__423529_0_768627_0_854902_0_000000_0_001",
+            "color": [
+              0.4235000014305115,
+              0.7685999870300293,
+              0.8549000024795532,
+              0.5
+            ],
+            "metallic": 1.0,
+            "smoothness": 0.8500000089406967
+          }
+        }
+      ]
+    },
+    {
+      "name": "desk2_red",
+      "path": "/World/field/desk2_red/mesh",
+      "category": "field",
+      "vertexByteOffset": 629424,
+      "vertexCount": 8814,
+      "submeshes": [
+        {
+          "indexByteOffset": 735192,
+          "indexCount": 8448,
+          "material": {
+            "name": "material__000000_0_000000_0_000000_0_000000_0_000000",
+            "color": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 768984,
+          "indexCount": 1140,
+          "material": {
+            "name": "material__909804_0_572549_0_164706_0_000000_0_000000",
+            "color": [
+              0.9097999930381775,
+              0.5724999904632568,
+              0.1647000014781952,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 773544,
+          "indexCount": 28476,
+          "material": {
+            "name": "material__701961_0_701961_0_701961_0_000000_0_000000",
+            "color": [
+              0.7020000219345093,
+              0.7020000219345093,
+              0.7020000219345093,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        }
+      ]
+    },
+    {
+      "name": "desk2_blue",
+      "path": "/World/field/desk2_blue/mesh",
+      "category": "field",
+      "vertexByteOffset": 887448,
+      "vertexCount": 8814,
+      "submeshes": [
+        {
+          "indexByteOffset": 993216,
+          "indexCount": 8448,
+          "material": {
+            "name": "material__000000_0_000000_0_000000_0_000000_0_000000",
+            "color": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 1027008,
+          "indexCount": 1140,
+          "material": {
+            "name": "material__909804_0_572549_0_164706_0_000000_0_000000",
+            "color": [
+              0.9097999930381775,
+              0.5724999904632568,
+              0.1647000014781952,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 1031568,
+          "indexCount": 28476,
+          "material": {
+            "name": "material__701961_0_701961_0_701961_0_000000_0_000000",
+            "color": [
+              0.7020000219345093,
+              0.7020000219345093,
+              0.7020000219345093,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        }
+      ]
+    },
+    {
+      "name": "bucket3_red",
+      "path": "/World/field/bucket3_red/mesh",
+      "category": "field",
+      "vertexByteOffset": 1145472,
+      "vertexCount": 602,
+      "submeshes": [
+        {
+          "indexByteOffset": 1152696,
+          "indexCount": 1800,
+          "material": {
+            "name": "material__423529_0_768627_0_854902_0_000000_0_001",
+            "color": [
+              0.4235000014305115,
+              0.7685999870300293,
+              0.8549000024795532,
+              0.5
+            ],
+            "metallic": 1.0,
+            "smoothness": 0.8500000089406967
+          }
+        }
+      ]
+    },
+    {
+      "name": "bucket3_blue",
+      "path": "/World/field/bucket3_blue/mesh",
+      "category": "field",
+      "vertexByteOffset": 1159896,
+      "vertexCount": 602,
+      "submeshes": [
+        {
+          "indexByteOffset": 1167120,
+          "indexCount": 1800,
+          "material": {
+            "name": "material__423529_0_768627_0_854902_0_000000_0_001",
+            "color": [
+              0.4235000014305115,
+              0.7685999870300293,
+              0.8549000024795532,
+              0.5
+            ],
+            "metallic": 1.0,
+            "smoothness": 0.8500000089406967
+          }
+        }
+      ]
+    },
+    {
+      "name": "desk_replenish_red",
+      "path": "/World/field/desk_replenish_red/mesh",
+      "category": "field",
+      "vertexByteOffset": 1174320,
+      "vertexCount": 8814,
+      "submeshes": [
+        {
+          "indexByteOffset": 1280088,
+          "indexCount": 8448,
+          "material": {
+            "name": "material__000000_0_000000_0_000000_0_000000_0_000000",
+            "color": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 1313880,
+          "indexCount": 1140,
+          "material": {
+            "name": "material__909804_0_572549_0_164706_0_000000_0_000000",
+            "color": [
+              0.9097999930381775,
+              0.5724999904632568,
+              0.1647000014781952,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 1318440,
+          "indexCount": 28476,
+          "material": {
+            "name": "material__701961_0_701961_0_701961_0_000000_0_000000",
+            "color": [
+              0.7020000219345093,
+              0.7020000219345093,
+              0.7020000219345093,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        }
+      ]
+    },
+    {
+      "name": "desk_replenish_blue",
+      "path": "/World/field/desk_replenish_blue/mesh",
+      "category": "field",
+      "vertexByteOffset": 1432344,
+      "vertexCount": 8814,
+      "submeshes": [
+        {
+          "indexByteOffset": 1538112,
+          "indexCount": 8448,
+          "material": {
+            "name": "material__000000_0_000000_0_000000_0_000000_0_000000",
+            "color": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 1571904,
+          "indexCount": 1140,
+          "material": {
+            "name": "material__909804_0_572549_0_164706_0_000000_0_000000",
+            "color": [
+              0.9097999930381775,
+              0.5724999904632568,
+              0.1647000014781952,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 1576464,
+          "indexCount": 28476,
+          "material": {
+            "name": "material__701961_0_701961_0_701961_0_000000_0_000000",
+            "color": [
+              0.7020000219345093,
+              0.7020000219345093,
+              0.7020000219345093,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        }
+      ]
+    },
+    {
+      "name": "desk_control_red",
+      "path": "/World/field/desk_control_red/mesh",
+      "category": "field",
+      "vertexByteOffset": 1690368,
+      "vertexCount": 8814,
+      "submeshes": [
+        {
+          "indexByteOffset": 1796136,
+          "indexCount": 8448,
+          "material": {
+            "name": "material__000000_0_000000_0_000000_0_000000_0_000000",
+            "color": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 1829928,
+          "indexCount": 1140,
+          "material": {
+            "name": "material__909804_0_572549_0_164706_0_000000_0_000000",
+            "color": [
+              0.9097999930381775,
+              0.5724999904632568,
+              0.1647000014781952,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 1834488,
+          "indexCount": 28476,
+          "material": {
+            "name": "material__701961_0_701961_0_701961_0_000000_0_000000",
+            "color": [
+              0.7020000219345093,
+              0.7020000219345093,
+              0.7020000219345093,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        }
+      ]
+    },
+    {
+      "name": "desk_control_blue",
+      "path": "/World/field/desk_control_blue/mesh",
+      "category": "field",
+      "vertexByteOffset": 1948392,
+      "vertexCount": 8814,
+      "submeshes": [
+        {
+          "indexByteOffset": 2054160,
+          "indexCount": 8448,
+          "material": {
+            "name": "material__000000_0_000000_0_000000_0_000000_0_000000",
+            "color": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 2087952,
+          "indexCount": 1140,
+          "material": {
+            "name": "material__909804_0_572549_0_164706_0_000000_0_000000",
+            "color": [
+              0.9097999930381775,
+              0.5724999904632568,
+              0.1647000014781952,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 2092512,
+          "indexCount": 28476,
+          "material": {
+            "name": "material__701961_0_701961_0_701961_0_000000_0_000000",
+            "color": [
+              0.7020000219345093,
+              0.7020000219345093,
+              0.7020000219345093,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        }
+      ]
+    },
+    {
+      "name": "chair_red",
+      "path": "/World/field/chair_red/mesh",
+      "category": "field",
+      "vertexByteOffset": 2206416,
+      "vertexCount": 24880,
+      "submeshes": [
+        {
+          "indexByteOffset": 2504976,
+          "indexCount": 14520,
+          "material": {
+            "name": "material__800000_0_600000_0_000000_0_000000_0_000000",
+            "color": [
+              0.800000011920929,
+              0.6000000238418579,
+              0.0,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 2563056,
+          "indexCount": 81990,
+          "material": {
+            "name": "material__200000_0_200000_0_200000_0_000000_0_000000",
+            "color": [
+              0.20000000298023224,
+              0.20000000298023224,
+              0.20000000298023224,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        }
+      ]
+    },
+    {
+      "name": "chair",
+      "path": "/World/field/chair/mesh",
+      "category": "field",
+      "vertexByteOffset": 2891016,
+      "vertexCount": 24880,
+      "submeshes": [
+        {
+          "indexByteOffset": 3189576,
+          "indexCount": 14520,
+          "material": {
+            "name": "material__800000_0_600000_0_000000_0_000000_0_000000",
+            "color": [
+              0.800000011920929,
+              0.6000000238418579,
+              0.0,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 3247656,
+          "indexCount": 81990,
+          "material": {
+            "name": "material__200000_0_200000_0_200000_0_000000_0_000000",
+            "color": [
+              0.20000000298023224,
+              0.20000000298023224,
+              0.20000000298023224,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        }
+      ]
+    },
+    {
+      "name": "bucket2_platform_red",
+      "path": "/World/field/bucket2_platform_red/mesh",
+      "category": "field",
+      "vertexByteOffset": 3575616,
+      "vertexCount": 24,
+      "submeshes": [
+        {
+          "indexByteOffset": 3575904,
+          "indexCount": 36,
+          "material": {
+            "name": "material__941176_0_874510_0_678431_0_000000_0_000000",
+            "color": [
+              0.9412000179290771,
+              0.8744999766349792,
+              0.6783999800682068,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        }
+      ]
+    },
+    {
+      "name": "bucket2_platform_blue",
+      "path": "/World/field/bucket2_platform_blue/mesh",
+      "category": "field",
+      "vertexByteOffset": 3576048,
+      "vertexCount": 24,
+      "submeshes": [
+        {
+          "indexByteOffset": 3576336,
+          "indexCount": 36,
+          "material": {
+            "name": "material__941176_0_874510_0_678431_0_000000_0_000000",
+            "color": [
+              0.9412000179290771,
+              0.8744999766349792,
+              0.6783999800682068,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        }
+      ]
+    },
+    {
+      "name": "bucket3_platform_red",
+      "path": "/World/field/bucket3_platform_red/mesh",
+      "category": "field",
+      "vertexByteOffset": 3576480,
+      "vertexCount": 24,
+      "submeshes": [
+        {
+          "indexByteOffset": 3576768,
+          "indexCount": 36,
+          "material": {
+            "name": "material__941176_0_874510_0_678431_0_000000_0_001",
+            "color": [
+              0.9412000179290771,
+              0.8744999766349792,
+              0.6783999800682068,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        }
+      ]
+    },
+    {
+      "name": "bucket3_platform",
+      "path": "/World/field/bucket3_platform/mesh",
+      "category": "field",
+      "vertexByteOffset": 3576912,
+      "vertexCount": 24,
+      "submeshes": [
+        {
+          "indexByteOffset": 3577200,
+          "indexCount": 36,
+          "material": {
+            "name": "material__941176_0_874510_0_678431_0_000000_0_001",
+            "color": [
+              0.9412000179290771,
+              0.8744999766349792,
+              0.6783999800682068,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        }
+      ]
+    },
+    {
+      "name": "flag_red",
+      "path": "/World/field/flag_red/mesh",
+      "category": "field",
+      "vertexByteOffset": 3577344,
+      "vertexCount": 166,
+      "submeshes": [
+        {
+          "indexByteOffset": 3579336,
+          "indexCount": 438,
+          "material": {
+            "name": "material__000000_0_000000_0_000000_0_000000_0_000000",
+            "color": [
+              1.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        }
+      ]
+    },
+    {
+      "name": "flag_blue",
+      "path": "/World/field/flag_blue/mesh",
+      "category": "field",
+      "vertexByteOffset": 3581088,
+      "vertexCount": 166,
+      "submeshes": [
+        {
+          "indexByteOffset": 3583080,
+          "indexCount": 438,
+          "material": {
+            "name": "material__000000_0_000000_1_000000_0_000000_0_000000",
+            "color": [
+              0.0,
+              0.0,
+              1.0,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        }
+      ]
+    },
+    {
+      "name": "base_link",
+      "path": "/World/base_link/base_link/base_link",
+      "category": "robot",
+      "vertexByteOffset": 3584832,
+      "vertexCount": 471367,
+      "submeshes": [
+        {
+          "indexByteOffset": 9241236,
+          "indexCount": 96,
+          "material": {
+            "name": "ABS__White_",
+            "color": [
+              0.9647060036659241,
+              0.9647060036659241,
+              0.9529410004615784,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 9241620,
+          "indexCount": 396,
+          "material": {
+            "name": "Opaque_192_192_255_",
+            "color": [
+              0.7529410123825073,
+              0.7529410123825073,
+              1.0,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 9243204,
+          "indexCount": 43416,
+          "material": {
+            "name": "Aluminum___Satin_1",
+            "color": [
+              0.9607840180397034,
+              0.9607840180397034,
+              0.9647060036659241,
+              1.0
+            ],
+            "metallic": 0.75,
+            "smoothness": 0.7
+          }
+        },
+        {
+          "indexByteOffset": 9416868,
+          "indexCount": 2472,
+          "material": {
+            "name": "Opaque_33_138_33_",
+            "color": [
+              0.1294119954109192,
+              0.5411760210990906,
+              0.1294119954109192,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 9426756,
+          "indexCount": 29184,
+          "material": {
+            "name": "Opaque_202_209_238_",
+            "color": [
+              0.792156994342804,
+              0.8196079730987549,
+              0.9333329796791077,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 9543492,
+          "indexCount": 1500,
+          "material": {
+            "name": "Paint___Enamel_Glossy__Black_",
+            "color": [
+              0.09803900122642517,
+              0.09803900122642517,
+              0.09803900122642517,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 9549492,
+          "indexCount": 984,
+          "material": {
+            "name": "Paint___Enamel_Glossy__Red_",
+            "color": [
+              0.7686269879341125,
+              0.20784300565719604,
+              0.1529410034418106,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 9553428,
+          "indexCount": 2760,
+          "material": {
+            "name": "Powder_Coat___Rough__Yellow_",
+            "color": [
+              0.9098039865493774,
+              0.67843097448349,
+              0.137254998087883,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 9564468,
+          "indexCount": 24168,
+          "material": {
+            "name": "Steel___Satin_4",
+            "color": [
+              0.9607840180397034,
+              0.9254900217056274,
+              0.800000011920929,
+              1.0
+            ],
+            "metallic": 0.75,
+            "smoothness": 0.7
+          }
+        },
+        {
+          "indexByteOffset": 9661140,
+          "indexCount": 11082,
+          "material": {
+            "name": "Steel___Satin_3",
+            "color": [
+              0.3058820068836212,
+              0.6745100021362305,
+              0.4000000059604645,
+              1.0
+            ],
+            "metallic": 0.75,
+            "smoothness": 0.7
+          }
+        },
+        {
+          "indexByteOffset": 9705468,
+          "indexCount": 2436,
+          "material": {
+            "name": "\u92fc___\u30b5\u30c6\u30f3__1_",
+            "color": [
+              0.9254900217056274,
+              0.9137250185012817,
+              0.7372549772262573,
+              1.0
+            ],
+            "metallic": 0.75,
+            "smoothness": 0.7
+          }
+        },
+        {
+          "indexByteOffset": 9715212,
+          "indexCount": 168696,
+          "material": {
+            "name": "Steel___Satin_2",
+            "color": [
+              0.3058820068836212,
+              0.6862750053405762,
+              0.4000000059604645,
+              1.0
+            ],
+            "metallic": 0.75,
+            "smoothness": 0.7
+          }
+        },
+        {
+          "indexByteOffset": 10389996,
+          "indexCount": 888,
+          "material": {
+            "name": "Oak",
+            "color": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 10393548,
+          "indexCount": 113958,
+          "material": {
+            "name": "Silver___Satin",
+            "color": [
+              0.9843140244483948,
+              0.9803919792175293,
+              0.9607840180397034,
+              1.0
+            ],
+            "metallic": 0.75,
+            "smoothness": 0.7
+          }
+        },
+        {
+          "indexByteOffset": 10849380,
+          "indexCount": 4608,
+          "material": {
+            "name": "Chrome___Black",
+            "color": [
+              0.564706027507782,
+              0.556863009929657,
+              0.5450980067253113,
+              1.0
+            ],
+            "metallic": 0.75,
+            "smoothness": 0.7
+          }
+        },
+        {
+          "indexByteOffset": 10867812,
+          "indexCount": 56664,
+          "material": {
+            "name": "PA_12___Nylon___PA_603_CF__with_EOS_P_3D_Printers_",
+            "color": [
+              0.24705900251865387,
+              0.24705900251865387,
+              0.24705900251865387,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 11094468,
+          "indexCount": 627678,
+          "material": {
+            "name": "Opaque_160_160_160_",
+            "color": [
+              0.6274510025978088,
+              0.6274510025978088,
+              0.6274510025978088,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 13605180,
+          "indexCount": 7776,
+          "material": {
+            "name": "Steel___Satin_1",
+            "color": [
+              0.9529410004615784,
+              0.8705880045890808,
+              0.8705880045890808,
+              1.0
+            ],
+            "metallic": 0.75,
+            "smoothness": 0.7
+          }
+        },
+        {
+          "indexByteOffset": 13636284,
+          "indexCount": 15840,
+          "material": {
+            "name": "HP_3D_HR_CB_PA_12__with_HP_Jet_Fusion_580_Color_3D_Printer_",
+            "color": [
+              0.9647060036659241,
+              0.9647060036659241,
+              0.9529410004615784,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 13699644,
+          "indexCount": 374292,
+          "material": {
+            "name": "Aluminum___Satin",
+            "color": [
+              0.9607840180397034,
+              0.9607840180397034,
+              0.9647060036659241,
+              1.0
+            ],
+            "metallic": 0.75,
+            "smoothness": 0.7
+          }
+        },
+        {
+          "indexByteOffset": 15196812,
+          "indexCount": 1273116,
+          "material": {
+            "name": "Steel___Satin",
+            "color": [
+              0.6274510025978088,
+              0.6274510025978088,
+              0.6274510025978088,
+              1.0
+            ],
+            "metallic": 0.75,
+            "smoothness": 0.7
+          }
+        },
+        {
+          "indexByteOffset": 20289276,
+          "indexCount": 6708,
+          "material": {
+            "name": "Steel___Satin_5",
+            "color": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "metallic": 0.75,
+            "smoothness": 0.7
+          }
+        },
+        {
+          "indexByteOffset": 20316108,
+          "indexCount": 1428,
+          "material": {
+            "name": "Steel___Satin_6",
+            "color": [
+              0.5960779786109924,
+              0.5960779786109924,
+              0.5960779786109924,
+              1.0
+            ],
+            "metallic": 0.75,
+            "smoothness": 0.7
+          }
+        },
+        {
+          "indexByteOffset": 20321820,
+          "indexCount": 594,
+          "material": {
+            "name": "Steel___Satin_7",
+            "color": [
+              0.9490200281143188,
+              1.0,
+              0.4745100140571594,
+              1.0
+            ],
+            "metallic": 0.75,
+            "smoothness": 0.7
+          }
+        },
+        {
+          "indexByteOffset": 20324196,
+          "indexCount": 18408,
+          "material": {
+            "name": "Steel___Satin_8",
+            "color": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "metallic": 0.75,
+            "smoothness": 0.7
+          }
+        },
+        {
+          "indexByteOffset": 20397828,
+          "indexCount": 222,
+          "material": {
+            "name": "\u92fc___\u30b5\u30c6\u30f3__1__1",
+            "color": [
+              0.8509799838066101,
+              0.5960779786109924,
+              0.5960779786109924,
+              1.0
+            ],
+            "metallic": 0.75,
+            "smoothness": 0.7
+          }
+        },
+        {
+          "indexByteOffset": 20398716,
+          "indexCount": 60,
+          "material": {
+            "name": "\u92fc___\u30b5\u30c6\u30f3__1___1_",
+            "color": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "metallic": 0.75,
+            "smoothness": 0.7
+          }
+        },
+        {
+          "indexByteOffset": 20398956,
+          "indexCount": 252,
+          "material": {
+            "name": "Aluminum___Anodized_Glossy__Blue_",
+            "color": [
+              0.34902000427246094,
+              0.5843139886856079,
+              0.8549020290374756,
+              1.0
+            ],
+            "metallic": 0.75,
+            "smoothness": 0.7
+          }
+        },
+        {
+          "indexByteOffset": 20399964,
+          "indexCount": 6336,
+          "material": {
+            "name": "Steel___Satin_9",
+            "color": [
+              0.34509798884391785,
+              0.3215689957141876,
+              0.32548999786376953,
+              1.0
+            ],
+            "metallic": 0.75,
+            "smoothness": 0.7
+          }
+        },
+        {
+          "indexByteOffset": 20425308,
+          "indexCount": 3360,
+          "material": {
+            "name": "Paint___Metal_Flake__Blue_",
+            "color": [
+              0.18823499977588654,
+              0.23137299716472626,
+              0.5882350206375122,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 20438748,
+          "indexCount": 41088,
+          "material": {
+            "name": "Opaque_210_209_199_",
+            "color": [
+              0.8235290050506592,
+              0.8196079730987549,
+              0.7803919911384583,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 20603100,
+          "indexCount": 3072,
+          "material": {
+            "name": "Opaque_97_69_55_",
+            "color": [
+              0.3803919851779938,
+              0.2705880105495453,
+              0.21568599343299866,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 20615388,
+          "indexCount": 3432,
+          "material": {
+            "name": "Opaque_228_227_207_",
+            "color": [
+              0.8941180109977722,
+              0.8901960253715515,
+              0.8117650151252747,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 20629116,
+          "indexCount": 480,
+          "material": {
+            "name": "Opaque_21_22_24_",
+            "color": [
+              0.08235300332307816,
+              0.08627499639987946,
+              0.09411799907684326,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 20631036,
+          "indexCount": 1284,
+          "material": {
+            "name": "Opaque_38_37_37_",
+            "color": [
+              0.1490200012922287,
+              0.1450980007648468,
+              0.1450980007648468,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 20636172,
+          "indexCount": 132,
+          "material": {
+            "name": "Opaque_176_169_152_",
+            "color": [
+              0.6901959776878357,
+              0.6627449989318848,
+              0.5960779786109924,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        },
+        {
+          "indexByteOffset": 20636700,
+          "indexCount": 5736,
+          "material": {
+            "name": "Opaque_80_124_105_",
+            "color": [
+              0.31372499465942383,
+              0.48627498745918274,
+              0.4117650091648102,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        }
+      ]
+    },
+    {
+      "name": "marker_00",
+      "path": "/World/cloth_pool/marker_00/mesh",
+      "category": "cloth",
+      "vertexByteOffset": 20659644,
+      "vertexCount": 7296,
+      "submeshes": [
+        {
+          "indexByteOffset": 20747196,
+          "indexCount": 7296,
+          "material": {
+            "name": "DefaultMat",
+            "color": [
+              0.96,
+              0.96,
+              0.96,
+              1.0
+            ],
+            "metallic": 0.1,
+            "smoothness": 0.6
+          }
+        }
+      ]
+    }
+  ]
+}
