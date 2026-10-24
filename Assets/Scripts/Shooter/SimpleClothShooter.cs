@@ -83,7 +83,6 @@ namespace RobotSim.Shooter
         private static readonly List<ClothFlight> _activeFlights = new List<ClothFlight>();
         private static int _nextClothId = 0;
         private static Vector3 _lastClothWorldPos = Vector3.zero;
-        private static double _lastExternalStepTime = 0.0;
 
         private readonly Dictionary<int, GameObject> _visualClothMap = new Dictionary<int, GameObject>();
 
@@ -190,7 +189,7 @@ namespace RobotSim.Shooter
                     id = newId,
                     pos = spawnPos,
                     vel = worldVel,
-                    rot = transform.rotation,
+                    rot = robotRot,
                     flightElapsed = 0f,
                     isFlying = true,
                     groundTime = 0f
@@ -202,7 +201,6 @@ namespace RobotSim.Shooter
         public static void StepClothPhysics(float dt)
         {
             if (dt <= 0f) return;
-            _lastExternalStepTime = Time.realtimeSinceStartupAsDouble;
 
             lock (ClothLock)
             {
@@ -224,13 +222,6 @@ namespace RobotSim.Shooter
                     }
                 }
             }
-        }
-
-        private void FixedUpdate()
-        {
-            // Fallback physics step when external thread stepper (e.g. LivoxMid360Sim) is not active
-            if (Time.realtimeSinceStartupAsDouble - _lastExternalStepTime < 0.1) return;
-            StepClothPhysics(Time.fixedDeltaTime);
         }
 
         private void OnThrowMsg(std_msgs.msg.Bool msg)
