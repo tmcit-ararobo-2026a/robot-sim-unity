@@ -13,6 +13,12 @@ namespace RobotSim.Opponent
         Reloading
     }
 
+    public enum FieldSide
+    {
+        BlueZone, // 青陣地 (X < -0.30)
+        RedZone   // 赤陣地 (X > +0.30)
+    }
+
     [Serializable]
     public struct ObstacleRect2D
     {
@@ -35,6 +41,9 @@ namespace RobotSim.Opponent
     [RequireComponent(typeof(Rigidbody))]
     public class OpponentRobotController : MonoBehaviour
     {
+        [Header("Field Side Assignment")]
+        [SerializeField] private FieldSide fieldSide = FieldSide.BlueZone;
+
         [Header("Omni-Drive Kinematics")]
         [SerializeField] private float maxMoveSpeed = 1.0f;          // 最高巡回速度 (m/s)
         [SerializeField] private float reloadApproachSpeed = 0.75f;  // リロード帰還速度 (m/s)
@@ -46,27 +55,25 @@ namespace RobotSim.Opponent
         [Header("Match FSM Timing")]
         [SerializeField] private float patrolDuration = 22.0f;       // 巡回・投擲フェーズ時間 (秒)
         [SerializeField] private float aimPauseDuration = 1.8f;      // 各投擲ポイントでの照準・射撃滞在時間 (秒)
-        [SerializeField] private float reloadWaitDuration = 4.0f;    // リロードゾーン停止時間 (秒)
+        [SerializeField] private float reloadWaitDuration = 10.0f;   // リロードゾーン停止時間 (秒: 10秒装填)
 
-        [Header("Blue Zone Boundaries (World Space: X < -0.30 is Blue Zone)")]
-        [SerializeField] private float blueZoneMinX = -5.70f;        // 青バックフェンス内面
-        [SerializeField] private float blueZoneMaxX = -0.30f;        // 中央教壇の青側エッジ
-        [SerializeField] private float blueZoneMinZ = -5.25f;        // 補充机側フェンス内面
-        [SerializeField] private float blueZoneMaxZ = 5.25f;         // 奥側フェンス内面
+        [Header("Zone Boundaries (World Space)")]
+        [SerializeField] private float zoneMinX = -5.70f;
+        [SerializeField] private float zoneMaxX = -0.30f;
+        [SerializeField] private float zoneMinZ = -5.25f;
+        [SerializeField] private float zoneMaxZ = 5.25f;
 
-        [Header("Reload Zone (Blue Start Zone next to desk_replenish_blue)")]
-        // desk_replenish_blue World Center = (-1.06, 0.34, -4.77)
-        // 青スタートゾーン内待機座標
+        [Header("Reload Zone")]
         [SerializeField] private Vector3 reloadPosition = new Vector3(-2.00f, 0.00f, -4.55f);
-        [SerializeField] private float reloadFacingYawDeg = 90.0f;   // 補充机 (+X方向) を向く
+        [SerializeField] private float reloadFacingYawDeg = 90.0f;   // 補充机方向
 
-        [Header("Safe Corridor Waypoints (Blue Zone World Space)")]
+        [Header("Safe Corridor Waypoints (Blue Base)")]
         [SerializeField] private List<Vector3> corridorNodes = new List<Vector3>
         {
-            new Vector3(-2.00f, 0.00f, -4.55f), // 0: Reload Zone (Blue Start Zone)
+            new Vector3(-2.00f, 0.00f, -4.55f), // 0: Reload Zone
             new Vector3(-2.50f, 0.00f, -3.30f), // 1: Exit Reload / Left Entry
             new Vector3(-2.50f, 0.00f, -1.20f), // 2: Front-Left Throw Spot
-            new Vector3(-1.92f, 0.00f,  0.55f), // 3: Front-Center Throw Spot (between bucket1 & flag)
+            new Vector3(-1.92f, 0.00f,  0.55f), // 3: Front-Center Throw Spot
             new Vector3(-2.45f, 0.00f,  2.10f), // 4: Front-Right Throw Spot
             new Vector3(-2.45f, 0.00f,  4.10f), // 5: Far-Right Throw Spot
             new Vector3(-3.95f, 0.00f,  1.90f), // 6: Back-Right Throw Spot
@@ -78,17 +85,24 @@ namespace RobotSim.Opponent
         [SerializeField] private string cmdVelTopic = "/opponent/cmd_vel";
 
         public OpponentState CurrentState { get; private set; } = OpponentState.Patrol;
+        public FieldSide AssignedSide => fieldSide;
         public Vector3 CurrentVelocity { get; private set; } = Vector3.zero;
         public int CurrentTargetNode { get; private set; } = 1;
 
         private Rigidbody _rb;
         private float _phaseTimer = 0f;
         private float _aimTimer = 0f;
-        private float _targetYawDeg = 90.0f; // デフォルトで赤ゾーン (+X) 方向を向く
+        private float _targetYawDeg = 90.0f;
         private readonly Queue<int> _navQueue = new Queue<int>();
         private int _currentNodeIndex = 0;
 
-        // 無向グラフの隣接リスト（全エッジが障害物クリアランス検証済み）
+        private List<Vector3> _activeNodes;
+        private ObstacleRect2D[] _activeObstacles;
+        private Vector3[] _activeLookPoints;
+        private Vector3 _activeReloadPos;
+        private float _activeReloadYaw;
+
+        // 無向グラフの隣接リスト
         private static readonly int[][] AdjacencyGraph = new int[][]
         {
             new[] { 1 },          // 0 (Reload) <-> 1
@@ -115,12 +129,12 @@ namespace RobotSim.Opponent
             new ObstacleRect2D("desk_control_blue",    -5.65f, -5.20f, -5.19f, -4.64f)
         };
 
-        private static readonly Vector3[] RedTargetLookPoints = new Vector3[]
+        private static readonly Vector3[] BaseLookPoints = new Vector3[]
         {
-            new Vector3(1.48f, 0.76f, -1.27f), // bucket2_red
-            new Vector3(3.03f, 1.53f,  0.75f), // flag_red
-            new Vector3(1.49f, 0.43f,  2.72f), // bucket3_red
-            new Vector3(2.50f, 1.50f,  0.00f)  // Red center
+            new Vector3(1.48f, 0.76f, -1.27f), // Opponent Target 1
+            new Vector3(3.03f, 1.53f,  0.75f), // Opponent Target 2 (Flag)
+            new Vector3(1.49f, 0.43f,  2.72f), // Opponent Target 3
+            new Vector3(2.50f, 1.50f,  0.00f)  // Opponent Center
         };
 
         private ROS2UnityComponent _ros2Unity;
@@ -136,6 +150,62 @@ namespace RobotSim.Opponent
             _rb.useGravity = false;
             _rb.isKinematic = true;
             _rb.constraints = RigidbodyConstraints.FreezeRotationX | RigidbodyConstraints.FreezeRotationZ;
+
+            InitSideData();
+        }
+
+        public void SetFieldSide(FieldSide side)
+        {
+            fieldSide = side;
+            InitSideData();
+        }
+
+        private void InitSideData()
+        {
+            if (fieldSide == FieldSide.BlueZone)
+            {
+                zoneMinX = -5.70f;
+                zoneMaxX = -0.30f;
+                _activeReloadPos = reloadPosition;
+                _activeReloadYaw = reloadFacingYawDeg;
+
+                _activeNodes = new List<Vector3>(corridorNodes);
+                _activeObstacles = (ObstacleRect2D[])BlueZoneObstacles.Clone();
+
+                _activeLookPoints = new Vector3[BaseLookPoints.Length];
+                for (int i = 0; i < BaseLookPoints.Length; i++)
+                {
+                    _activeLookPoints[i] = BaseLookPoints[i];
+                }
+            }
+            else // RedZone: X座標を反転 (x -> -x)
+            {
+                zoneMinX = 0.30f;
+                zoneMaxX = 5.70f;
+                _activeReloadPos = new Vector3(-reloadPosition.x, reloadPosition.y, reloadPosition.z); // (+2.00, 0, -4.55)
+                _activeReloadYaw = -reloadFacingYawDeg; // -90deg (向き: -X)
+
+                _activeNodes = new List<Vector3>();
+                for (int i = 0; i < corridorNodes.Count; i++)
+                {
+                    Vector3 n = corridorNodes[i];
+                    _activeNodes.Add(new Vector3(-n.x, n.y, n.z));
+                }
+
+                _activeObstacles = new ObstacleRect2D[BlueZoneObstacles.Length];
+                for (int i = 0; i < BlueZoneObstacles.Length; i++)
+                {
+                    ObstacleRect2D o = BlueZoneObstacles[i];
+                    _activeObstacles[i] = new ObstacleRect2D(o.name + "_mirrored", -o.maxX, -o.minX, o.minZ, o.maxZ);
+                }
+
+                _activeLookPoints = new Vector3[BaseLookPoints.Length];
+                for (int i = 0; i < BaseLookPoints.Length; i++)
+                {
+                    Vector3 lp = BaseLookPoints[i];
+                    _activeLookPoints[i] = new Vector3(-lp.x, lp.y, lp.z);
+                }
+            }
         }
 
         private void Start()
@@ -243,12 +313,12 @@ namespace RobotSim.Opponent
             if (_navQueue.Count == 0)
             {
                 // 投擲スポットに到着 → 照準＆投擲フェーズへ
-                Vector3 lookTarget = RedTargetLookPoints[UnityEngine.Random.Range(0, RedTargetLookPoints.Length)];
-                Vector3 toRed = lookTarget - transform.position;
-                toRed.y = 0f;
-                if (toRed.sqrMagnitude > 0.01f)
+                Vector3 lookTarget = _activeLookPoints[UnityEngine.Random.Range(0, _activeLookPoints.Length)];
+                Vector3 toTarget = lookTarget - transform.position;
+                toTarget.y = 0f;
+                if (toTarget.sqrMagnitude > 0.01f)
                 {
-                    _targetYawDeg = Quaternion.LookRotation(toRed.normalized, Vector3.up).eulerAngles.y;
+                    _targetYawDeg = Quaternion.LookRotation(toTarget.normalized, Vector3.up).eulerAngles.y;
                 }
                 SetState(OpponentState.AimingAndThrowing);
                 return;
@@ -256,7 +326,7 @@ namespace RobotSim.Opponent
 
             int nextNode = _navQueue.Peek();
             CurrentTargetNode = nextNode;
-            Vector3 targetPos = corridorNodes[nextNode];
+            Vector3 targetPos = _activeNodes[nextNode];
 
             if (MoveHolonomicTowards(targetPos, maxMoveSpeed, _targetYawDeg, dt))
             {
@@ -266,8 +336,8 @@ namespace RobotSim.Opponent
 
         private void UpdateAimingAndThrowing(float dt)
         {
-            // 投擲スポットで小刻みに左右オムニ回避運動をしながら赤陣地へ照準を合わせる
-            Vector3 anchor = corridorNodes[_currentNodeIndex];
+            // 投擲スポットで小刻みに左右オムニ回避運動をしながら相手陣地へ照準を合わせる
+            Vector3 anchor = _activeNodes[_currentNodeIndex];
             float strafeOffset = Mathf.Sin(_aimTimer * 3.5f) * 0.14f;
             Vector3 strafeTarget = anchor + new Vector3(0f, 0f, strafeOffset);
 
@@ -278,7 +348,7 @@ namespace RobotSim.Opponent
         {
             if (_navQueue.Count == 0)
             {
-                if (MoveHolonomicTowards(reloadPosition, reloadApproachSpeed, reloadFacingYawDeg, dt))
+                if (MoveHolonomicTowards(_activeReloadPos, reloadApproachSpeed, _activeReloadYaw, dt))
                 {
                     _currentNodeIndex = 0;
                     CurrentVelocity = Vector3.zero;
@@ -289,9 +359,9 @@ namespace RobotSim.Opponent
 
             int nextNode = _navQueue.Peek();
             CurrentTargetNode = nextNode;
-            Vector3 targetPos = (nextNode == 0) ? reloadPosition : corridorNodes[nextNode];
+            Vector3 targetPos = (nextNode == 0) ? _activeReloadPos : _activeNodes[nextNode];
 
-            if (MoveHolonomicTowards(targetPos, reloadApproachSpeed, reloadFacingYawDeg, dt))
+            if (MoveHolonomicTowards(targetPos, reloadApproachSpeed, _activeReloadYaw, dt))
             {
                 _currentNodeIndex = _navQueue.Dequeue();
             }
@@ -299,9 +369,9 @@ namespace RobotSim.Opponent
 
         private void UpdateReloading(float dt)
         {
-            // スタートゾーン内で完全停止し、補充スポット机 (+X方向) へ正対
-            MoveHolonomicTowards(reloadPosition, 0.3f, reloadFacingYawDeg, dt);
-            if ((transform.position - reloadPosition).sqrMagnitude < 0.01f)
+            // スタートゾーン内で完全停止し、補充スポット机へ正対
+            MoveHolonomicTowards(_activeReloadPos, 0.3f, _activeReloadYaw, dt);
+            if ((transform.position - _activeReloadPos).sqrMagnitude < 0.01f)
             {
                 CurrentVelocity = Vector3.zero;
             }
@@ -333,12 +403,12 @@ namespace RobotSim.Opponent
             CurrentVelocity = Vector3.MoveTowards(CurrentVelocity, desiredVel, acceleration * dt);
             Vector3 candidatePos = currentPos + CurrentVelocity * dt;
 
-            // 厳密な障害物押し戻し & 青ゾーン境界クランプ
+            // 厳密な障害物押し戻し & ゾーン境界クランプ
             Vector3 safePos = ResolveCollisionsAndBounds(candidatePos);
             CurrentVelocity = (safePos - currentPos) / Mathf.Max(dt, 1e-4f);
             _rb.MovePosition(safePos);
 
-            // オムニホイール独立姿勢制御（常に赤ゾーンまたは補充机に正対）
+            // オムニホイール独立姿勢制御（常に相手陣地または補充机に正対）
             Quaternion targetRot = Quaternion.Euler(0f, desiredYawDeg, 0f);
             _rb.MoveRotation(Quaternion.RotateTowards(transform.rotation, targetRot, rotateSpeedDeg * dt));
 
@@ -349,10 +419,11 @@ namespace RobotSim.Opponent
         {
             Vector3 totalRepulsion = Vector3.zero;
             float influenceRadius = robotBoundingRadius + 0.30f;
+            if (_activeObstacles == null) return totalRepulsion;
 
-            for (int i = 0; i < BlueZoneObstacles.Length; i++)
+            for (int i = 0; i < _activeObstacles.Length; i++)
             {
-                ObstacleRect2D ob = BlueZoneObstacles[i];
+                ObstacleRect2D ob = _activeObstacles[i];
                 float cx = Mathf.Clamp(pos.x, ob.minX, ob.maxX);
                 float cz = Mathf.Clamp(pos.z, ob.minZ, ob.maxZ);
                 Vector3 diff = new Vector3(pos.x - cx, 0f, pos.z - cz);
@@ -371,18 +442,20 @@ namespace RobotSim.Opponent
         {
             float r = robotBoundingRadius;
 
-            // 1. 青ゾーン外周フェンスおよび中央教壇 (X: [-5.70, -0.30], Z: [-5.25, +5.25]) から絶対にはみ出さないクランプ
-            pos.x = Mathf.Clamp(pos.x, blueZoneMinX + r, blueZoneMaxX - r);
-            pos.z = Mathf.Clamp(pos.z, blueZoneMinZ + r, blueZoneMaxZ - r);
+            // 1. ゾーン外周フェンスおよび中央教壇から絶対にはみ出さないクランプ
+            pos.x = Mathf.Clamp(pos.x, zoneMinX + r, zoneMaxX - r);
+            pos.z = Mathf.Clamp(pos.z, zoneMinZ + r, zoneMaxZ - r);
             pos.y = 0.00f;
 
-            // 2. 全固定障害物 (バケツ1/2/3、机1/2、補充机、コントロール机、旗、椅子) との厳密な Circle-vs-AABB 押し出し判定
+            if (_activeObstacles == null) return pos;
+
+            // 2. 全固定障害物との厳密な Circle-vs-AABB 押し出し判定
             float safetyMargin = r + 0.05f;
             for (int iter = 0; iter < 2; iter++)
             {
-                for (int i = 0; i < BlueZoneObstacles.Length; i++)
+                for (int i = 0; i < _activeObstacles.Length; i++)
                 {
-                    ObstacleRect2D ob = BlueZoneObstacles[i];
+                    ObstacleRect2D ob = _activeObstacles[i];
                     float closestX = Mathf.Clamp(pos.x, ob.minX, ob.maxX);
                     float closestZ = Mathf.Clamp(pos.z, ob.minZ, ob.maxZ);
 
@@ -401,15 +474,14 @@ namespace RobotSim.Opponent
                         }
                         else
                         {
-                            // AABB内部に入り込んだ場合は最短脱出方向へ押し出す
                             float midX = (ob.minX + ob.maxX) * 0.5f;
                             pos.x = (pos.x < midX) ? (ob.minX - safetyMargin) : (ob.maxX + safetyMargin);
                         }
                     }
                 }
 
-                pos.x = Mathf.Clamp(pos.x, blueZoneMinX + r, blueZoneMaxX - r);
-                pos.z = Mathf.Clamp(pos.z, blueZoneMinZ + r, blueZoneMaxZ - r);
+                pos.x = Mathf.Clamp(pos.x, zoneMinX + r, zoneMaxX - r);
+                pos.z = Mathf.Clamp(pos.z, zoneMinZ + r, zoneMaxZ - r);
             }
 
             return pos;
@@ -417,21 +489,26 @@ namespace RobotSim.Opponent
 
         private void PlanRouteToRandomThrowSpot()
         {
+            if (_activeNodes == null) return;
+
             // Node 2..7 の投擲スポットから現在地以外のスポットを選択
-            int nextGoal = UnityEngine.Random.Range(2, corridorNodes.Count);
+            int nextGoal = UnityEngine.Random.Range(2, _activeNodes.Count);
             if (nextGoal == _currentNodeIndex)
             {
-                nextGoal = ((nextGoal - 2 + 1) % (corridorNodes.Count - 2)) + 2;
+                nextGoal = ((nextGoal - 2 + 1) % (_activeNodes.Count - 2)) + 2;
             }
             PlanRouteToNode(nextGoal);
 
-            // 赤ゾーン方向 (+X, Yaw=75〜105deg) を向く
-            _targetYawDeg = 90.0f + UnityEngine.Random.Range(-15.0f, 15.0f);
+            // 相手ゾーン方向 (BlueZoneなら+X=90deg, RedZoneなら-X=270deg/-90deg)
+            float baseAimYaw = (fieldSide == FieldSide.BlueZone) ? 90.0f : -90.0f;
+            _targetYawDeg = baseAimYaw + UnityEngine.Random.Range(-15.0f, 15.0f);
         }
 
         private void PlanRouteToNode(int goalNode)
         {
             _navQueue.Clear();
+            if (_activeNodes == null) return;
+
             int startNode = FindNearestNodeIndex(transform.position);
             _currentNodeIndex = startNode;
 
@@ -442,7 +519,7 @@ namespace RobotSim.Opponent
             }
 
             // BFS 最短経路探索
-            int n = corridorNodes.Count;
+            int n = _activeNodes.Count;
             int[] parent = new int[n];
             bool[] visited = new bool[n];
             for (int i = 0; i < n; i++) parent[i] = -1;
@@ -484,11 +561,12 @@ namespace RobotSim.Opponent
 
         private int FindNearestNodeIndex(Vector3 pos)
         {
+            var nodes = _activeNodes ?? corridorNodes;
             int bestIdx = 0;
             float bestDistSq = float.MaxValue;
-            for (int i = 0; i < corridorNodes.Count; i++)
+            for (int i = 0; i < nodes.Count; i++)
             {
-                Vector3 d = corridorNodes[i] - pos;
+                Vector3 d = nodes[i] - pos;
                 d.y = 0f;
                 if (d.sqrMagnitude < bestDistSq)
                 {
@@ -501,17 +579,22 @@ namespace RobotSim.Opponent
 
         private void OnDrawGizmosSelected()
         {
-            // 青ゾーン外周の可視化
-            Gizmos.color = new Color(0.1f, 0.5f, 1.0f, 0.8f);
-            Vector3 center = new Vector3((blueZoneMinX + blueZoneMaxX) * 0.5f, 0.05f, (blueZoneMinZ + blueZoneMaxZ) * 0.5f);
-            Vector3 size = new Vector3(blueZoneMaxX - blueZoneMinX, 0.05f, blueZoneMaxZ - blueZoneMinZ);
+            if (_activeNodes == null) InitSideData();
+
+            // ゾーン外周の可視化
+            Gizmos.color = (fieldSide == FieldSide.BlueZone)
+                ? new Color(0.1f, 0.5f, 1.0f, 0.8f)
+                : new Color(1.0f, 0.3f, 0.3f, 0.8f);
+            Vector3 center = new Vector3((zoneMinX + zoneMaxX) * 0.5f, 0.05f, (zoneMinZ + zoneMaxZ) * 0.5f);
+            Vector3 size = new Vector3(zoneMaxX - zoneMinX, 0.05f, zoneMaxZ - zoneMinZ);
             Gizmos.DrawWireCube(center, size);
 
             // 障害物AABBの可視化
             Gizmos.color = new Color(1.0f, 0.2f, 0.2f, 0.8f);
-            for (int i = 0; i < BlueZoneObstacles.Length; i++)
+            var obstacles = _activeObstacles ?? BlueZoneObstacles;
+            for (int i = 0; i < obstacles.Length; i++)
             {
-                var ob = BlueZoneObstacles[i];
+                var ob = obstacles[i];
                 Vector3 obCenter = new Vector3((ob.minX + ob.maxX) * 0.5f, 0.25f, (ob.minZ + ob.maxZ) * 0.5f);
                 Vector3 obSize = new Vector3(ob.maxX - ob.minX + robotBoundingRadius * 2f, 0.5f, ob.maxZ - ob.minZ + robotBoundingRadius * 2f);
                 Gizmos.DrawWireCube(obCenter, obSize);
@@ -519,16 +602,17 @@ namespace RobotSim.Opponent
 
             // 安全回廊グラフの可視化
             Gizmos.color = Color.cyan;
-            if (corridorNodes != null)
+            var nodes = _activeNodes ?? corridorNodes;
+            if (nodes != null)
             {
-                for (int u = 0; u < corridorNodes.Count && u < AdjacencyGraph.Length; u++)
+                for (int u = 0; u < nodes.Count && u < AdjacencyGraph.Length; u++)
                 {
-                    Gizmos.DrawSphere(corridorNodes[u] + Vector3.up * 0.1f, 0.12f);
+                    Gizmos.DrawSphere(nodes[u] + Vector3.up * 0.1f, 0.12f);
                     foreach (int v in AdjacencyGraph[u])
                     {
-                        if (v < corridorNodes.Count && u < v)
+                        if (v < nodes.Count && u < v)
                         {
-                            Gizmos.DrawLine(corridorNodes[u] + Vector3.up * 0.1f, corridorNodes[v] + Vector3.up * 0.1f);
+                            Gizmos.DrawLine(nodes[u] + Vector3.up * 0.1f, nodes[v] + Vector3.up * 0.1f);
                         }
                     }
                 }
@@ -536,7 +620,8 @@ namespace RobotSim.Opponent
 
             // リロードゾーンの可視化
             Gizmos.color = Color.yellow;
-            Gizmos.DrawWireCube(reloadPosition + Vector3.up * 0.1f, new Vector3(0.95f, 0.15f, 0.95f));
+            Vector3 rPos = (_activeReloadPos != Vector3.zero) ? _activeReloadPos : reloadPosition;
+            Gizmos.DrawWireCube(rPos + Vector3.up * 0.1f, new Vector3(0.95f, 0.15f, 0.95f));
         }
     }
 }

@@ -1,6 +1,8 @@
 using System;
 using UnityEngine;
 using UnityEditor;
+using UnityEngine.SceneManagement;
+using UnityEditor.SceneManagement;
 using RobotSim.Environment;
 using RobotSim.Opponent;
 
@@ -8,8 +10,52 @@ namespace RobotSim.Editor
 {
     public static class OpponentRobotBuilder
     {
-        [MenuItem("RoboSim/Create or Update Opponent Robot (Rule 2026 Compliant)")]
-        public static void CreateOrUpdateOpponentRobot()
+        [MenuItem("RoboSim/Create or Update Opponent Robot (Blue Zone)")]
+        public static void CreateOrUpdateBlueZoneOpponent()
+        {
+            CreateOrUpdateOpponentRobot(FieldSide.BlueZone);
+        }
+
+        [MenuItem("RoboSim/Create or Update Opponent Robot (Red Zone)")]
+        public static void CreateOrUpdateRedZoneOpponent()
+        {
+            CreateOrUpdateOpponentRobot(FieldSide.RedZone);
+        }
+
+        [MenuItem("RoboSim/Generate Inverted Scene (Blue Player vs Red Opponent)")]
+        public static void GenerateInvertedScene()
+        {
+            EditorSceneManager.SaveOpenScenes();
+            string standardScenePath = "Assets/Scenes/NHK2026_SimScene.unity";
+            string invertedScenePath = "Assets/Scenes/NHK2026_SimScene_BluePlayer.unity";
+
+            Scene scene = EditorSceneManager.OpenScene(standardScenePath, OpenSceneMode.Single);
+
+            // 自機 Robot を青スタートゾーンへ配置 (Yaw=90deg で赤ゾーン方向を向く)
+            GameObject playerRobot = GameObject.Find("Robot");
+            if (playerRobot != null)
+            {
+                playerRobot.transform.position = new Vector3(-2.30f, -0.02f, -4.14f);
+                playerRobot.transform.rotation = Quaternion.Euler(0f, 90f, 0f);
+            }
+
+            // 相手 OpponentRobot を赤スタートゾーンへ配置 (赤チーム仕様)
+            CreateOrUpdateOpponentRobot(FieldSide.RedZone);
+
+            // スペクテーターカメラの視点調整
+            GameObject camObj = GameObject.Find("Spectator Camera");
+            if (camObj != null)
+            {
+                camObj.transform.position = new Vector3(-5.2f, 3.2f, -5.2f);
+                camObj.transform.LookAt(new Vector3(0.0f, 0.6f, -0.5f));
+            }
+
+            EditorSceneManager.SaveScene(scene, invertedScenePath, true);
+            AssetDatabase.Refresh();
+            Debug.Log($"<color=cyan>[OpponentRobotBuilder]</color> 反転シーン {invertedScenePath} を生成・保存しました! (自機: 青ゾーン, 相手: 赤ゾーン)");
+        }
+
+        public static GameObject CreateOrUpdateOpponentRobot(FieldSide side = FieldSide.BlueZone)
         {
             const string RobotName = "OpponentRobot";
             GameObject existing = GameObject.Find(RobotName);
@@ -21,9 +67,17 @@ namespace RobotSim.Editor
             GameObject robot = new GameObject(RobotName);
             Undo.RegisterCreatedObjectUndo(robot, "Create Opponent Robot");
 
-            // 初期位置: 青ゾーンのスタートゾーン (desk_replenish_blue: X=-1.06, Z=-4.77 のすぐ横)
-            robot.transform.position = new Vector3(-2.00f, 0.00f, -4.55f);
-            robot.transform.rotation = Quaternion.Euler(0f, 90f, 0f); // 赤ゾーン (+X方向) に正対
+            // 初期位置 & 向き
+            if (side == FieldSide.BlueZone)
+            {
+                robot.transform.position = new Vector3(-2.00f, 0.00f, -4.55f);
+                robot.transform.rotation = Quaternion.Euler(0f, 90f, 0f); // 赤ゾーン (+X方向) に正対
+            }
+            else
+            {
+                robot.transform.position = new Vector3(2.00f, 0.00f, -4.55f);
+                robot.transform.rotation = Quaternion.Euler(0f, -90f, 0f); // 青ゾーン (-X方向) に正対
+            }
 
             // 1. Rigidbody & 自律コントローラ
             Rigidbody rb = robot.AddComponent<Rigidbody>();
@@ -31,24 +85,33 @@ namespace RobotSim.Editor
             rb.useGravity = false;
             rb.constraints = RigidbodyConstraints.FreezeRotationX | RigidbodyConstraints.FreezeRotationZ;
 
-            robot.AddComponent<OpponentRobotController>();
+            OpponentRobotController controller = robot.AddComponent<OpponentRobotController>();
+            controller.SetFieldSide(side);
 
             // マテリアル群の生成
             Material aluMat = CreateMat("Mat_Opp_Aluminum", new Color(0.76f, 0.78f, 0.82f, 1f), 0.75f, 0.65f);
             Material darkFrameMat = CreateMat("Mat_Opp_DarkFrame", new Color(0.18f, 0.20f, 0.23f, 1f), 0.5f, 0.5f);
-            Material blueArmorMat = CreateMat("Mat_Opp_BlueArmor", new Color(0.10f, 0.35f, 0.88f, 1f), 0.3f, 0.65f);
+            Material armorMat = (side == FieldSide.BlueZone)
+                ? CreateMat("Mat_Opp_BlueArmor", new Color(0.10f, 0.35f, 0.88f, 1f), 0.3f, 0.65f)
+                : CreateMat("Mat_Opp_RedArmor", new Color(0.85f, 0.15f, 0.12f, 1f), 0.3f, 0.65f);
             Material wheelRubberMat = CreateMat("Mat_Opp_Wheel", new Color(0.12f, 0.12f, 0.14f, 1f), 0.1f, 0.3f);
             Material airTankMat = CreateMat("Mat_Opp_AirTank", new Color(0.15f, 0.52f, 0.85f, 1f), 0.65f, 0.75f);
             Material yellowBaseMat = CreateMat("Mat_Opp_EStopYellow", new Color(0.95f, 0.80f, 0.05f, 1f), 0.1f, 0.6f);
             Material redBtnMat = CreateMat("Mat_Opp_EStopRed", new Color(0.92f, 0.10f, 0.10f, 1f), 0.1f, 0.6f);
-            Material ledBlueMat = CreateEmissiveMat("Mat_Opp_LED", new Color(0.0f, 0.85f, 1.0f, 1f), new Color(0.0f, 1.5f, 2.0f, 1f));
+            Material ledMat = (side == FieldSide.BlueZone)
+                ? CreateEmissiveMat("Mat_Opp_LED", new Color(0.0f, 0.85f, 1.0f, 1f), new Color(0.0f, 1.5f, 2.0f, 1f))
+                : CreateEmissiveMat("Mat_Opp_LED_Red", new Color(1.0f, 0.2f, 0.1f, 1f), new Color(2.0f, 0.4f, 0.2f, 1f));
             Material mascotSkinMat = CreateMat("Mat_Opp_MascotSkin", new Color(0.98f, 0.82f, 0.65f, 1f), 0.05f, 0.35f);
-            Material mascotUniformMat = CreateMat("Mat_Opp_MascotBlue", new Color(0.12f, 0.42f, 0.95f, 1f), 0.1f, 0.45f);
+            Material mascotUniformMat = (side == FieldSide.BlueZone)
+                ? CreateMat("Mat_Opp_MascotBlue", new Color(0.12f, 0.42f, 0.95f, 1f), 0.1f, 0.45f)
+                : CreateMat("Mat_Opp_MascotRed", new Color(0.92f, 0.18f, 0.12f, 1f), 0.1f, 0.45f);
             Material mascotWhiteMat = CreateMat("Mat_Opp_MascotWhite", new Color(0.95f, 0.95f, 0.97f, 1f), 0.1f, 0.45f);
-            Material bucketPolyMat = CreateTransparentMat("Mat_Opp_PolyBucket", new Color(0.86f, 0.94f, 1.0f, 0.42f));
+            Material bucketPolyMat = (side == FieldSide.BlueZone)
+                ? CreateTransparentMat("Mat_Opp_PolyBucket", new Color(0.86f, 0.94f, 1.0f, 0.42f))
+                : CreateTransparentMat("Mat_Opp_PolyBucket_Red", new Color(1.00f, 0.88f, 0.88f, 0.42f));
 
             // 2. オムニホイールベース車体 (880mm x 880mm x 260mm) - ルール3.2.2準拠
-            BuildDetailedOmniChassis(robot.transform, aluMat, darkFrameMat, blueArmorMat, wheelRubberMat, airTankMat, yellowBaseMat, redBtnMat, ledBlueMat);
+            BuildDetailedOmniChassis(robot.transform, aluMat, darkFrameMat, armorMat, wheelRubberMat, airTankMat, yellowBaseMat, redBtnMat, ledMat);
 
             // 3. 雑巾投擲シューター機構 (前方デッキ)
             BuildShooterMechanism(robot.transform, aluMat, darkFrameMat, wheelRubberMat);
@@ -61,11 +124,12 @@ namespace RobotSim.Editor
             BuildDetailedMascot(robot.transform, mascotSkinMat, mascotUniformMat, mascotWhiteMat, darkFrameMat, redBtnMat);
 
             // 6. ツインアルミ支柱 & 移動バケツ (PO-24A実寸CADメッシュ, 上面高さ1.80m, 中空コライダー構造) - ルール3.2.3 / 5.3準拠
-            BuildMovingBucketAssembly(robot.transform, meta, binData, aluMat, redBtnMat, bucketPolyMat);
+            BuildMovingBucketAssembly(robot.transform, side, meta, binData, aluMat, redBtnMat, bucketPolyMat);
 
             Selection.activeGameObject = robot;
             EditorUtility.SetDirty(robot);
-            Debug.Log("<color=cyan>[OpponentRobotBuilder]</color> 2026公式ルール完全準拠・高精度相手ロボット (CAD椅子・CADバケツ・4輪オムニ・非常停止2基・LED・多関節マスコット・安全回廊ナビ搭載) を生成しました!");
+            Debug.Log($"<color=cyan>[OpponentRobotBuilder]</color> 2026公式ルール完全準拠・相手ロボット ({side}) を生成しました! (リロード待機時間: 10秒)");
+            return robot;
         }
 
         private static void BuildDetailedOmniChassis(
@@ -285,6 +349,7 @@ namespace RobotSim.Editor
 
         private static void BuildMovingBucketAssembly(
             Transform root,
+            FieldSide side,
             IsaacSceneMeta meta,
             byte[] binData,
             Material aluMat,
@@ -322,19 +387,31 @@ namespace RobotSim.Editor
             bool loadedBucketCad = false;
             if (meta != null && binData != null && meta.meshes != null)
             {
+                string targetMeshName = (side == FieldSide.BlueZone) ? "bucket1_blue" : "bucket1_red";
+                string cadName = (side == FieldSide.BlueZone) ? "PO24A_Bucket_CAD_Blue" : "PO24A_Bucket_CAD_Red";
+                IsaacMeshEntry selectedEntry = null;
                 foreach (var entry in meta.meshes)
                 {
-                    if (entry.name == "bucket1_blue")
+                    if (entry.name == targetMeshName)
                     {
-                        Mesh rawBucket = FieldMapBuilder.BuildUnityMesh(entry, binData, out _);
-                        Mesh centeredBucket = RecenterMeshCenter(rawBucket, "PO24A_Bucket_CAD");
-                        MeshFilter mf = bucketObj.AddComponent<MeshFilter>();
-                        mf.sharedMesh = centeredBucket;
-                        MeshRenderer mr = bucketObj.AddComponent<MeshRenderer>();
-                        mr.sharedMaterial = bucketPolyMat;
-                        loadedBucketCad = true;
+                        selectedEntry = entry;
                         break;
                     }
+                    if (selectedEntry == null && entry.name == "bucket1_blue")
+                    {
+                        selectedEntry = entry;
+                    }
+                }
+
+                if (selectedEntry != null)
+                {
+                    Mesh rawBucket = FieldMapBuilder.BuildUnityMesh(selectedEntry, binData, out _);
+                    Mesh centeredBucket = RecenterMeshCenter(rawBucket, cadName);
+                    MeshFilter mf = bucketObj.AddComponent<MeshFilter>();
+                    mf.sharedMesh = centeredBucket;
+                    MeshRenderer mr = bucketObj.AddComponent<MeshRenderer>();
+                    mr.sharedMaterial = bucketPolyMat;
+                    loadedBucketCad = true;
                 }
             }
 
@@ -395,6 +472,11 @@ namespace RobotSim.Editor
         {
             EnsureAssetFolder();
             string assetPath = $"{AssetFolder}/{newName}.asset";
+            Mesh existing = AssetDatabase.LoadAssetAtPath<Mesh>(assetPath);
+            if (existing != null)
+            {
+                return existing;
+            }
             Mesh m = UnityEngine.Object.Instantiate(src);
             m.name = newName;
             Bounds b = m.bounds;
@@ -406,7 +488,6 @@ namespace RobotSim.Editor
             }
             m.vertices = verts;
             m.RecalculateBounds();
-            AssetDatabase.DeleteAsset(assetPath);
             AssetDatabase.CreateAsset(m, assetPath);
             return m;
         }
@@ -415,6 +496,11 @@ namespace RobotSim.Editor
         {
             EnsureAssetFolder();
             string assetPath = $"{AssetFolder}/{newName}.asset";
+            Mesh existing = AssetDatabase.LoadAssetAtPath<Mesh>(assetPath);
+            if (existing != null)
+            {
+                return existing;
+            }
             Mesh m = UnityEngine.Object.Instantiate(src);
             m.name = newName;
             Bounds b = m.bounds;
@@ -426,7 +512,6 @@ namespace RobotSim.Editor
             }
             m.vertices = verts;
             m.RecalculateBounds();
-            AssetDatabase.DeleteAsset(assetPath);
             AssetDatabase.CreateAsset(m, assetPath);
             return m;
         }
@@ -480,11 +565,19 @@ namespace RobotSim.Editor
         {
             EnsureAssetFolder();
             string assetPath = $"{AssetFolder}/{name}.mat";
+            Material existing = AssetDatabase.LoadAssetAtPath<Material>(assetPath);
+            if (existing != null)
+            {
+                existing.color = color;
+                if (existing.HasProperty("_Metallic")) existing.SetFloat("_Metallic", metallic);
+                if (existing.HasProperty("_Glossiness")) existing.SetFloat("_Glossiness", smoothness);
+                EditorUtility.SetDirty(existing);
+                return existing;
+            }
             Shader shader = Shader.Find("Standard") ?? Shader.Find("Universal Render Pipeline/Lit");
             Material mat = new Material(shader) { name = name, color = color };
             if (mat.HasProperty("_Metallic")) mat.SetFloat("_Metallic", metallic);
             if (mat.HasProperty("_Glossiness")) mat.SetFloat("_Glossiness", smoothness);
-            AssetDatabase.DeleteAsset(assetPath);
             AssetDatabase.CreateAsset(mat, assetPath);
             return mat;
         }
@@ -502,6 +595,13 @@ namespace RobotSim.Editor
         {
             EnsureAssetFolder();
             string assetPath = $"{AssetFolder}/{name}.mat";
+            Material existing = AssetDatabase.LoadAssetAtPath<Material>(assetPath);
+            if (existing != null)
+            {
+                existing.color = color;
+                EditorUtility.SetDirty(existing);
+                return existing;
+            }
             Shader shader = Shader.Find("Standard") ?? Shader.Find("Universal Render Pipeline/Lit");
             Material mat = new Material(shader) { name = name, color = color };
             if (mat.HasProperty("_Mode"))
@@ -515,7 +615,6 @@ namespace RobotSim.Editor
                 mat.DisableKeyword("_ALPHAPREMULTIPLY_ON");
                 mat.renderQueue = 3000;
             }
-            AssetDatabase.DeleteAsset(assetPath);
             AssetDatabase.CreateAsset(mat, assetPath);
             return mat;
         }
