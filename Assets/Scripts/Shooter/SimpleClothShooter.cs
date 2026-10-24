@@ -16,19 +16,76 @@ namespace RobotSim.Shooter
 
         public static bool IsClothFlying
         {
-            get { lock (ClothLock) { return _clothFlying; } }
+            get
+            {
+                lock (ClothLock)
+                {
+                    for (int i = 0; i < _activeFlights.Count; i++)
+                    {
+                        if (_activeFlights[i].isFlying) return true;
+                    }
+                    return false;
+                }
+            }
         }
 
         public static Vector3 ActiveClothWorldPos
         {
-            get { lock (ClothLock) { return _clothWorldPos; } }
+            get
+            {
+                lock (ClothLock)
+                {
+                    for (int i = _activeFlights.Count - 1; i >= 0; i--)
+                    {
+                        if (_activeFlights[i].isFlying) return _activeFlights[i].pos;
+                    }
+                    return _lastClothWorldPos;
+                }
+            }
+        }
+
+        public static List<Vector3> GetAllFlyingClothPositions()
+        {
+            lock (ClothLock)
+            {
+                var list = new List<Vector3>(_activeFlights.Count);
+                for (int i = 0; i < _activeFlights.Count; i++)
+                {
+                    if (_activeFlights[i].isFlying)
+                    {
+                        list.Add(_activeFlights[i].pos);
+                    }
+                }
+                return list;
+            }
+        }
+
+        private class ClothFlight
+        {
+            public int id;
+            public Vector3 pos;
+            public Vector3 vel;
+            public Quaternion rot;
+            public float flightElapsed;
+            public bool isFlying;
+            public float groundTime;
+        }
+
+        private struct ClothStateSnapshot
+        {
+            public int id;
+            public Vector3 pos;
+            public Quaternion rot;
+            public bool isFlying;
         }
 
         private static readonly object ClothLock = new object();
-        private static bool _clothFlying = false;
-        private static Vector3 _clothWorldPos = Vector3.zero;
-        private static Vector3 _clothWorldVel = Vector3.zero;
-        private static float _clothFlightElapsed = 0f;
+        private static readonly List<ClothFlight> _activeFlights = new List<ClothFlight>();
+        private static int _nextClothId = 0;
+        private static Vector3 _lastClothWorldPos = Vector3.zero;
+        private static double _lastExternalStepTime = 0.0;
+
+        private readonly Dictionary<int, GameObject> _visualClothMap = new Dictionary<int, GameObject>();
 
         private ROS2UnityComponent _ros2Unity;
         private ROS2Node _node;
@@ -39,13 +96,10 @@ namespace RobotSim.Shooter
 
         private float _currentSpeedRatio = 0.5f;
         private bool _lastThrowState = false;
-        private bool _pendingVisualSpawn = false;
         private bool _pendingReset = false;
 
         private Mesh _cachedClothMesh;
         private Material[] _cachedClothMats;
-        private GameObject _activeVisualCloth;
-        private readonly List<GameObject> _spawnedCloths = new List<GameObject>();
 
         private static readonly (float level, float speed_ratio, float release_velocity, float flight_distance)[] MEASURED_LUT = new[]
         {
@@ -103,8 +157,7 @@ namespace RobotSim.Shooter
         {
             lock (ClothLock)
             {
-                _clothFlying = false;
-                _clothFlightElapsed = 0f;
+                _activeFlights.Clear();
             }
             _pendingReset = true;
         }
@@ -131,30 +184,53 @@ namespace RobotSim.Shooter
 
             lock (ClothLock)
             {
-                _clothWorldPos = spawnPos;
-                _clothWorldVel = worldVel;
-                _clothFlightElapsed = 0f;
-                _clothFlying = true;
+                int newId = ++_nextClothId;
+                _activeFlights.Add(new ClothFlight
+                {
+                    id = newId,
+                    pos = spawnPos,
+                    vel = worldVel,
+                    rot = transform.rotation,
+                    flightElapsed = 0f,
+                    isFlying = true,
+                    groundTime = 0f
+                });
+                _lastClothWorldPos = spawnPos;
             }
-            _pendingVisualSpawn = true;
         }
 
         public static void StepClothPhysics(float dt)
         {
+            if (dt <= 0f) return;
+            _lastExternalStepTime = Time.realtimeSinceStartupAsDouble;
+
             lock (ClothLock)
             {
-                if (!_clothFlying) return;
-                _clothFlightElapsed += dt;
-                Vector3 drag = -0.35f * _clothWorldVel;
-                _clothWorldVel += (new Vector3(0f, -9.81f, 0f) + drag) * dt;
-                _clothWorldPos += _clothWorldVel * dt;
-
-                if (_clothWorldPos.y <= 0.03f || _clothFlightElapsed > 5.0f)
+                for (int i = 0; i < _activeFlights.Count; i++)
                 {
-                    _clothWorldPos.y = 0.03f;
-                    _clothFlying = false;
+                    var f = _activeFlights[i];
+                    if (!f.isFlying) continue;
+
+                    f.flightElapsed += dt;
+                    Vector3 drag = -0.35f * f.vel;
+                    f.vel += (new Vector3(0f, -9.81f, 0f) + drag) * dt;
+                    f.pos += f.vel * dt;
+
+                    if (f.pos.y <= 0.03f || f.flightElapsed > 5.0f)
+                    {
+                        f.pos.y = 0.03f;
+                        f.vel = Vector3.zero;
+                        f.isFlying = false;
+                    }
                 }
             }
+        }
+
+        private void FixedUpdate()
+        {
+            // Fallback physics step when external thread stepper (e.g. LivoxMid360Sim) is not active
+            if (Time.realtimeSinceStartupAsDouble - _lastExternalStepTime < 0.1) return;
+            StepClothPhysics(Time.fixedDeltaTime);
         }
 
         private void OnThrowMsg(std_msgs.msg.Bool msg)
@@ -190,32 +266,109 @@ namespace RobotSim.Shooter
                 ShootCloth(_currentSpeedRatio, null);
             }
 
-            if (_pendingVisualSpawn)
+            SyncClothVisuals();
+        }
+
+        private void SyncClothVisuals()
+        {
+            float dt = Time.deltaTime;
+            ClothStateSnapshot[] snapshots = null;
+            List<int> toRemoveIds = null;
+
+            lock (ClothLock)
             {
-                _pendingVisualSpawn = false;
-                SpawnVisualCloth();
+                if (_activeFlights.Count > 0)
+                {
+                    snapshots = new ClothStateSnapshot[_activeFlights.Count];
+                    for (int i = 0; i < _activeFlights.Count; i++)
+                    {
+                        var f = _activeFlights[i];
+                        if (!f.isFlying)
+                        {
+                            f.groundTime += dt;
+                            if (f.groundTime > 15.0f || f.flightElapsed > 25.0f)
+                            {
+                                if (toRemoveIds == null) toRemoveIds = new List<int>();
+                                toRemoveIds.Add(f.id);
+                            }
+                        }
+
+                        snapshots[i] = new ClothStateSnapshot
+                        {
+                            id = f.id,
+                            pos = f.pos,
+                            rot = f.rot,
+                            isFlying = f.isFlying
+                        };
+                    }
+
+                    if (toRemoveIds != null)
+                    {
+                        for (int r = 0; r < toRemoveIds.Count; r++)
+                        {
+                            int remId = toRemoveIds[r];
+                            for (int i = _activeFlights.Count - 1; i >= 0; i--)
+                            {
+                                if (_activeFlights[i].id == remId)
+                                {
+                                    _activeFlights.RemoveAt(i);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
-            if (_activeVisualCloth != null)
+            if (snapshots != null)
             {
-                lock (ClothLock)
+                for (int i = 0; i < snapshots.Length; i++)
                 {
-                    _activeVisualCloth.transform.position = _clothWorldPos;
+                    int id = snapshots[i].id;
+                    Vector3 pos = snapshots[i].pos;
+                    Quaternion rot = snapshots[i].rot;
+
+                    if (!_visualClothMap.TryGetValue(id, out GameObject visualObj) || visualObj == null)
+                    {
+                        visualObj = CreateVisualClothObject(pos, rot);
+                        _visualClothMap[id] = visualObj;
+                    }
+
+                    if (visualObj != null)
+                    {
+                        visualObj.transform.position = pos;
+                    }
+                }
+            }
+
+            if (toRemoveIds != null)
+            {
+                for (int r = 0; r < toRemoveIds.Count; r++)
+                {
+                    int remId = toRemoveIds[r];
+                    if (_visualClothMap.TryGetValue(remId, out GameObject obj))
+                    {
+                        if (obj != null) Destroy(obj);
+                        _visualClothMap.Remove(remId);
+                    }
                 }
             }
         }
 
         public void ResetCloths()
         {
-            for (int i = _spawnedCloths.Count - 1; i >= 0; i--)
+            lock (ClothLock)
             {
-                if (_spawnedCloths[i] != null)
+                _activeFlights.Clear();
+            }
+            foreach (var kvp in _visualClothMap)
+            {
+                if (kvp.Value != null)
                 {
-                    Destroy(_spawnedCloths[i]);
+                    Destroy(kvp.Value);
                 }
             }
-            _spawnedCloths.Clear();
-            _activeVisualCloth = null;
+            _visualClothMap.Clear();
         }
 
         public void ShootCloth(float speedRatio, Vector3? customLocalVel = null)
@@ -223,25 +376,19 @@ namespace RobotSim.Shooter
             StartBallisticFlight(speedRatio, customLocalVel);
         }
 
-        private void SpawnVisualCloth()
+        private GameObject CreateVisualClothObject(Vector3 spawnPos, Quaternion rot)
         {
             EnsureClothMeshLoaded();
-            Vector3 spawnPos;
-            lock (ClothLock)
-            {
-                spawnPos = _clothWorldPos;
-            }
-
             GameObject clothObj;
             if (clothPrefab != null)
             {
-                clothObj = Instantiate(clothPrefab, spawnPos, transform.rotation);
+                clothObj = Instantiate(clothPrefab, spawnPos, rot);
             }
             else if (_cachedClothMesh != null)
             {
                 clothObj = new GameObject("marker_cloth");
                 clothObj.transform.position = spawnPos;
-                clothObj.transform.rotation = transform.rotation;
+                clothObj.transform.rotation = rot;
 
                 MeshFilter mf = clothObj.AddComponent<MeshFilter>();
                 mf.sharedMesh = _cachedClothMesh;
@@ -258,14 +405,13 @@ namespace RobotSim.Shooter
                 clothObj = GameObject.CreatePrimitive(PrimitiveType.Cube);
                 clothObj.name = "SimulatedDustCloth";
                 clothObj.transform.position = spawnPos;
-                clothObj.transform.rotation = transform.rotation;
+                clothObj.transform.rotation = rot;
                 clothObj.transform.localScale = new Vector3(0.25f, 0.03f, 0.25f);
                 clothObj.GetComponent<Renderer>().material.color = Color.white;
             }
 
-            _activeVisualCloth = clothObj;
-            _spawnedCloths.Add(clothObj);
-            Destroy(clothObj, 15.0f);
+            Destroy(clothObj, 25.0f);
+            return clothObj;
         }
 
         private static float GetReleaseVelocityFromRatio(float ratio)

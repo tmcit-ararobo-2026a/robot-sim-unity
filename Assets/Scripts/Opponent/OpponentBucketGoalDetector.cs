@@ -59,20 +59,24 @@ namespace RobotSim.Opponent
 
         private void CheckGeometricClothIntersection()
         {
-            if (!SimpleClothShooter.IsClothFlying) return;
+            var flyingCloths = SimpleClothShooter.GetAllFlyingClothPositions();
+            if (flyingCloths.Count == 0) return;
 
-            Vector3 clothPos = SimpleClothShooter.ActiveClothWorldPos;
             Vector3 bucketTopCenter = transform.position;
-
-            // バケツ上面からの相対ベクトル
-            Vector3 diff = clothPos - bucketTopCenter;
-            float horizontalDist = Mathf.Sqrt(diff.x * diff.x + diff.z * diff.z);
-            float verticalOffset = diff.y; // 0が上面、-bucketDepthが底面
-
-            // 開口部半径以内かつ上面から底面の間に入ったかを判定
-            if (horizontalDist <= bucketRadius && verticalOffset <= 0.05f && verticalOffset >= -bucketDepth)
+            for (int i = 0; i < flyingCloths.Count; i++)
             {
-                TriggerGoal("GeometricIntersection");
+                Vector3 clothPos = flyingCloths[i];
+                // バケツ上面からの相対ベクトル
+                Vector3 diff = clothPos - bucketTopCenter;
+                float horizontalDist = Mathf.Sqrt(diff.x * diff.x + diff.z * diff.z);
+                float verticalOffset = diff.y; // 0が上面、-bucketDepthが底面
+
+                // 開口部半径以内かつ上面から底面の間に入ったかを判定
+                if (horizontalDist <= bucketRadius && verticalOffset <= 0.05f && verticalOffset >= -bucketDepth)
+                {
+                    TriggerGoal("GeometricIntersection");
+                    break;
+                }
             }
         }
 
@@ -102,3 +106,4 @@ namespace RobotSim.Opponent
         }
     }
 }
+

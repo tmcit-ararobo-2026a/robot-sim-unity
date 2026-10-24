@@ -196,9 +196,10 @@ namespace RobotSim.Sensors
                 }
             }
 
-            if (SimpleClothShooter.IsClothFlying)
+            var flyingClothPositions = SimpleClothShooter.GetAllFlyingClothPositions();
+            for (int f = 0; f < flyingClothPositions.Count; f++)
             {
-                OverlayFlyingCloth(SimpleClothShooter.ActiveClothWorldPos);
+                OverlayFlyingCloth(flyingClothPositions[f]);
             }
 
             sensor_msgs.msg.Image colorMsg = new sensor_msgs.msg.Image();
