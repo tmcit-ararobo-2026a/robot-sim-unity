@@ -243,8 +243,9 @@ namespace RobotSim.Sensors
 
         private void OverlayFlyingCloth(Vector3 clothWorldPos)
         {
-            Vector3 robotPos = KinematicOmniDrive.SharedRobotPosition;
-            Quaternion r = KinematicOmniDrive.SharedRobotRotation;
+            var motion = KinematicOmniDrive.GetMotionState();
+            Vector3 robotPos = motion.Position;
+            Quaternion r = motion.Rotation;
             Quaternion invRobotRot = new Quaternion(-r.x, -r.y, -r.z, r.w);
 
             // Cloth position in robot local Unity coordinates (x=right, y=up, z=forward)

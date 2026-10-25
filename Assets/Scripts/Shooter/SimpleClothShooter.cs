@@ -163,8 +163,9 @@ namespace RobotSim.Shooter
 
         private void StartBallisticFlight(float speedRatio, Vector3? customLocalVel)
         {
-            Vector3 robotPos = KinematicOmniDrive.SharedRobotPosition;
-            Quaternion robotRot = KinematicOmniDrive.SharedRobotRotation;
+            var motion = KinematicOmniDrive.GetMotionState();
+            Vector3 robotPos = motion.Position;
+            Quaternion robotRot = motion.Rotation;
             // Spawn inside realsense_dust_cloth launch gate (x_rob=0.90m, y_rob=0.0m, z_rob=1.52m)
             Vector3 spawnPos = robotPos + robotRot * new Vector3(0f, 1.52f, 0.90f);
 

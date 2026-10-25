@@ -46,6 +46,14 @@ namespace RobotSim.Environment
     [ExecuteInEditMode]
     public class FieldMapBuilder : MonoBehaviour
     {
+        [Header("Movable Field Props (estimated masses, kg)")]
+        [SerializeField] private bool simulateLooseProps = true;
+        [SerializeField, Min(0.01f)] private float deskMass = 8f;
+        [SerializeField, Min(0.01f)] private float chairMass = 5f;
+        [SerializeField, Min(0.01f)] private float bucketMass = 0.6f;
+        [SerializeField, Min(0.01f)] private float platformMass = 3f;
+        [SerializeField, Min(0.01f)] private float flagMass = 10f;
+
         private static byte[] _cachedBinData;
         private static IsaacSceneMeta _cachedMeta;
 
@@ -189,6 +197,38 @@ namespace RobotSim.Environment
             }
 
             Debug.Log($"[FieldMapBuilder] Constructed {fieldCount} exact Isaac Sim field meshes from main.usd!");
+            if (Application.isPlaying) ConfigureRuntimePhysics();
+        }
+
+        private void ConfigureRuntimePhysics()
+        {
+            var fieldBase = transform.Find("field_base");
+            var ground = transform.Find("GroundPlaneCollider");
+            if (fieldBase != null && ground != null)
+            {
+                var physics = fieldBase.GetComponent<FieldGroundPhysics>();
+                if (physics == null) physics = fieldBase.gameObject.AddComponent<FieldGroundPhysics>();
+                physics.AlignGround(ground.GetComponent<BoxCollider>());
+            }
+            foreach (Transform child in transform)
+            {
+                if (child.name.StartsWith("bucket", StringComparison.Ordinal) && child.name.Contains("platform"))
+                    FieldPropPhysics.ConfigureStaticPlatform(child.gameObject);
+            }
+            ConfigureLooseProps();
+        }
+
+        public void ConfigureLooseProps()
+        {
+            if (!Application.isPlaying || !simulateLooseProps) return;
+            // Snapshot first: wrapping a mesh changes the field's direct children.
+            var props = new System.Collections.Generic.List<GameObject>();
+            foreach (Transform child in transform) props.Add(child.gameObject);
+            foreach (var prop in props)
+            {
+                if (FieldPropPhysics.TryGetMass(prop.name, deskMass, chairMass, bucketMass, flagMass, platformMass, out float mass))
+                    FieldPropPhysics.MakeMovable(prop, mass);
+            }
         }
 
         private void Start()
@@ -197,6 +237,7 @@ namespace RobotSim.Environment
             {
                 BuildField();
             }
+            else if (Application.isPlaying) ConfigureRuntimePhysics();
         }
     }
 }

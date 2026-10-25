@@ -1,5 +1,4 @@
 using System;
-using System.Diagnostics;
 using System.Collections.Generic;
 using System.IO;
 using UnityEngine;
@@ -84,8 +83,7 @@ namespace RobotSim.Sensors
         private int _totalRays = 0;
         private int _scanStartIndex = 0;
 
-        private Stopwatch _wallClock;
-        private double _lastStepWallSec = 0.0;
+        private double _lastStepSimSec = 10.0;
         private double _imuAccumSec = 0.0;
         private double _clockAccumSec;
         private double _lastImuTime;
@@ -101,8 +99,13 @@ namespace RobotSim.Sensors
             {
                 _simTimeSec = 10.0;
             }
-            _wallClock = Stopwatch.StartNew();
-            _lastStepWallSec = 0.0;
+            _lastStepSimSec = 10.0;
+        }
+
+        private void FixedUpdate()
+        {
+            // ROS time follows Unity physics, including pause and timeScale.
+            lock (TimeLock) _simTimeSec += Time.fixedDeltaTime;
         }
 
         private void Start()
@@ -231,22 +234,19 @@ namespace RobotSim.Sensors
         {
             if (_clockPub == null || _imuPub == null || _cloudPub == null) return;
 
-            double nowWall = _wallClock.Elapsed.TotalSeconds;
-            double delta = nowWall - _lastStepWallSec;
-            if (delta < 0.004) return;
-            _lastStepWallSec = nowWall;
+            double currentSim = CurrentSimTimeSec;
+            double delta = currentSim - _lastStepSimSec;
+            if (delta <= 0) return;
+            _lastStepSimSec = currentSim;
 
-            if (delta > 0.05) delta = 0.01;
-
-            double currentSim;
-            lock (TimeLock)
+            // Cloth uses the same elapsed simulation time, with stable substeps.
+            double remaining = delta;
+            while (remaining > 1e-8)
             {
-                _simTimeSec += delta;
-                currentSim = _simTimeSec;
+                float step = (float)Math.Min(remaining, 0.01);
+                SimpleClothShooter.StepClothPhysics(step);
+                remaining -= step;
             }
-
-            KinematicOmniDrive.StepKinematics((float)delta);
-            SimpleClothShooter.StepClothPhysics((float)delta);
 
             _clockAccumSec += delta;
             if (_clockAccumSec >= 0.01)
@@ -308,16 +308,14 @@ namespace RobotSim.Sensors
             imu.Header.Stamp.Sec = sec;
             imu.Header.Stamp.Nanosec = nanosec;
 
-            float wzBase = KinematicOmniDrive.SharedAngularVelocityRadZ;
+            var motion = KinematicOmniDrive.GetMotionState();
+            float wzBase = motion.AngularVelocityRadZ;
             Vector3 omegaLivox = RotateBaseToLivox(0f, 0f, wzBase);
             imu.Angular_velocity.X = omegaLivox.x;
             imu.Angular_velocity.Y = omegaLivox.y;
             imu.Angular_velocity.Z = omegaLivox.z;
 
-            Vector3 accelBaseUnity = KinematicOmniDrive.SharedLinearAccelBase;
-            Vector3 localVelocityUnity = Quaternion.Inverse(KinematicOmniDrive.SharedRobotRotation) *
-                KinematicOmniDrive.SharedLinearVelocityWorld;
-            Vector3 localVelocityRos = new Vector3(localVelocityUnity.z, -localVelocityUnity.x, localVelocityUnity.y);
+            Vector3 accelBaseUnity = motion.LinearAccelerationBase;
             Vector3 omegaBase = new Vector3(0, 0, wzBase);
             float alpha = _lastImuTime > 0 && simTimeSec > _lastImuTime
                 ? (wzBase - _lastImuAngularVelocity) / (float)(simTimeSec - _lastImuTime) : 0f;
@@ -326,7 +324,6 @@ namespace RobotSim.Sensors
             // MID-360S manual: IMU chip is (11.0, 23.29, -44.12) mm in LiDAR frame.
             Vector3 imuLeverArm = sensorPositionRos + RotateLivoxToBase(0.011f, 0.02329f, -0.04412f);
             Vector3 specificForce = new Vector3(accelBaseUnity.z, -accelBaseUnity.x, accelBaseUnity.y + 9.81f)
-                + Vector3.Cross(omegaBase, localVelocityRos)
                 + Vector3.Cross(new Vector3(0, 0, alpha), imuLeverArm)
                 + Vector3.Cross(omegaBase, Vector3.Cross(omegaBase, imuLeverArm));
             Vector3 accLivox = RotateBaseToLivox(specificForce.x, specificForce.y, specificForce.z);

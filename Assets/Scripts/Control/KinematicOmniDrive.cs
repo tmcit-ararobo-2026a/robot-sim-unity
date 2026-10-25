@@ -1,34 +1,89 @@
-using System;
+using System.Collections.Generic;
 using UnityEngine;
 using ROS2;
 
 namespace RobotSim.Control
 {
+    // Keep the script identity so existing scenes retain their drive component.
+    // Motion is simulated by a dynamic Rigidbody, not integrated into Transform.
     [RequireComponent(typeof(Rigidbody))]
     public class KinematicOmniDrive : MonoBehaviour
     {
         [Header("Drive Limits")]
-        [SerializeField] private float maxLinearSpeed = 2.0f;
-        [SerializeField] private float maxAngularSpeed = 3.14f;
+        [SerializeField, Min(0f)] private float maxLinearSpeed = 2.0f;
+        [SerializeField, Min(0f)] private float maxAngularSpeed = 3.14f;
+        [Tooltip("Velocity command ramp in m/s²; full forward speed takes about 0.5 s.")]
+        [SerializeField, Min(0.01f)] private float linearAcceleration = 4f;
+        [SerializeField, Min(0.01f)] private float brakingAcceleration = 6f;
+        [Tooltip("Angular command ramp in rad/s².")]
+        [SerializeField, Min(0.01f)] private float angularAcceleration = 8f;
+        [SerializeField, Min(0.01f)] private float angularBrakingAcceleration = 12f;
+        [SerializeField, Min(0.01f)] private float commandTimeout = 0.25f;
 
-        public static Vector3 SharedRobotPosition { get; private set; }
-        public static Quaternion SharedRobotRotation { get; private set; }
-        public static float SharedRobotYawRad { get; private set; }
-        public static Vector3 SharedLinearVelocityWorld { get; private set; }
-        public static Vector3 SharedLinearAccelBase { get; private set; }
-        public static float SharedAngularVelocityRadZ { get; private set; }
+        [Header("Motor Force Limits")]
+        [Tooltip("Motor force / mass limit in m/s², separate from the comfortable command ramp.")]
+        [SerializeField, Min(0.01f)] private float maxDriveAcceleration = 10f;
+        [SerializeField, Min(0.01f)] private float maxYawDriveAcceleration = 16f;
+
+        [Header("Chassis Contact")]
+        [Tooltip("Low rolling resistance for the chassis-level omni-wheel approximation.")]
+        [SerializeField, Range(0f, 1f)] private float rollingFriction = 0.05f;
+
+        public readonly struct MotionState
+        {
+            public readonly Vector3 Position;
+            public readonly Quaternion Rotation;
+            public readonly Vector3 LinearVelocityWorld;
+            // Actual world acceleration expressed in the base frame, including free fall.
+            public readonly Vector3 LinearAccelerationBase;
+            public readonly float AngularVelocityRadZ;
+
+            public MotionState(Vector3 position, Quaternion rotation, Vector3 velocity,
+                Vector3 accelerationBase, float angularVelocityRadZ)
+            {
+                Position = position;
+                Rotation = rotation;
+                LinearVelocityWorld = velocity;
+                LinearAccelerationBase = accelerationBase;
+                AngularVelocityRadZ = angularVelocityRadZ;
+            }
+        }
 
         private static readonly object StateLock = new object();
-        private static readonly System.Diagnostics.Stopwatch CmdWatch = System.Diagnostics.Stopwatch.StartNew();
-        private static Vector3 _targetLocalVelocity = Vector3.zero;
-        private static float _targetAngularZ = 0.0f;
-        private static Vector3 _currentLocalVelocity = Vector3.zero;
-        private static float _currentAngularZ = 0.0f;
-        private static double _lastRosCmdSec = -10.0;
-        private static bool _manualKeyActive = false;
-        private static bool _initialized = false;
+        private static MotionState _state = new MotionState(Vector3.zero, Quaternion.identity,
+            Vector3.zero, Vector3.zero, 0f);
+
+        // ROS callbacks run off the main thread: copy one complete physical snapshot.
+        public static MotionState GetMotionState()
+        {
+            lock (StateLock) return _state;
+        }
+
+        public static Vector3 SharedRobotPosition => GetMotionState().Position;
+        public static Quaternion SharedRobotRotation => GetMotionState().Rotation;
+        public static float SharedRobotYawRad => -Mathf.DeltaAngle(0f, GetMotionState().Rotation.eulerAngles.y) * Mathf.Deg2Rad;
+        public static Vector3 SharedLinearVelocityWorld => GetMotionState().LinearVelocityWorld;
+        public static Vector3 SharedLinearAccelBase => GetMotionState().LinearAccelerationBase;
+        public static float SharedAngularVelocityRadZ => GetMotionState().AngularVelocityRadZ;
+
+        private readonly object _commandLock = new object();
+        private readonly System.Diagnostics.Stopwatch _commandWatch = System.Diagnostics.Stopwatch.StartNew();
+        private Vector3 _targetLocalVelocity;
+        private float _targetAngularZ;
+        private double _lastRosCmdSec = -10;
+        private bool _manualKeyActive;
+        private Vector3 _manualLocalVelocity;
+        private float _manualAngularZ;
+        private Vector3 _rampedLocalVelocity;
+        private float _rampedAngularZ;
+        private readonly HashSet<Collider> _groundContacts = new HashSet<Collider>();
+        public bool IsGrounded => _groundContacts.Count > 0;
 
         private Rigidbody _rb;
+        private PhysicsMaterial _rollingMaterial;
+        private readonly List<Collider> _rollingColliders = new List<Collider>();
+        private Vector3 _previousVelocityWorld;
+        private Vector3 _accelerationWorld;
         private ROS2UnityComponent _ros2Unity;
         private ROS2Node _node;
         private ISubscription<geometry_msgs.msg.Twist> _subCmdVel;
@@ -38,147 +93,187 @@ namespace RobotSim.Control
         {
             Application.runInBackground = true;
             _rb = GetComponent<Rigidbody>();
-            _rb.useGravity = false;
-            _rb.isKinematic = true;
+            _rb.isKinematic = false;
+            _rb.useGravity = true;
             _rb.constraints = RigidbodyConstraints.FreezeRotationX | RigidbodyConstraints.FreezeRotationZ;
+            _rb.interpolation = RigidbodyInterpolation.Interpolate;
+            _rb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
+            _rb.maxAngularVelocity = Mathf.Max(_rb.maxAngularVelocity, maxAngularSpeed);
 
-            lock (StateLock)
+            // A default box's static/patch friction locks strafing and yaw. Approximate
+            // freely rolling omni wheels while keeping collision support and impulses.
+            _rollingMaterial = new PhysicsMaterial("Omni drive rolling contact")
             {
-                SharedRobotPosition = transform.position;
-                SharedRobotRotation = transform.rotation;
-                SharedRobotYawRad = -transform.eulerAngles.y * Mathf.Deg2Rad;
-                SharedLinearVelocityWorld = Vector3.zero;
-                SharedLinearAccelBase = Vector3.zero;
-                SharedAngularVelocityRadZ = 0.0f;
-                _currentLocalVelocity = Vector3.zero;
-                _currentAngularZ = 0.0f;
-                _targetLocalVelocity = Vector3.zero;
-                _targetAngularZ = 0.0f;
-                _initialized = true;
+                staticFriction = rollingFriction,
+                dynamicFriction = rollingFriction,
+                frictionCombine = PhysicsMaterialCombine.Minimum,
+                bounciness = 0f,
+                bounceCombine = PhysicsMaterialCombine.Minimum
+            };
+            foreach (var collider in GetComponentsInChildren<Collider>())
+            {
+                if (collider.attachedRigidbody != _rb || collider.isTrigger || collider.sharedMaterial != null) continue;
+                collider.sharedMaterial = _rollingMaterial;
+                _rollingColliders.Add(collider);
             }
+        }
+
+        private void OnDestroy()
+        {
+            foreach (var collider in _rollingColliders)
+                if (collider != null && collider.sharedMaterial == _rollingMaterial) collider.sharedMaterial = null;
+            if (_rollingMaterial != null) Destroy(_rollingMaterial);
+        }
+
+        private void OnEnable()
+        {
+            _groundContacts.Clear();
+            _previousVelocityWorld = _rb.linearVelocity;
+            _accelerationWorld = Vector3.zero;
+            ResetCommandRampToBody();
+            PublishMotionState();
         }
 
         private void Start()
         {
             _ros2Unity = FindFirstObjectByType<ROS2UnityComponent>();
-            if (_ros2Unity != null && _ros2Unity.Ok())
-            {
-                InitROS2();
-            }
+            InitROS2();
         }
 
         private void InitROS2()
         {
+            if (_ros2Unity == null || !_ros2Unity.Ok() || _node != null) return;
             _node = _ros2Unity.CreateNode("unity_omni_drive");
-            _subCmdVel = _node.CreateSubscription<geometry_msgs.msg.Twist>(
-                "/cmd_vel",
-                OnTwistReceived
-            );
+            _subCmdVel = _node.CreateSubscription<geometry_msgs.msg.Twist>("/cmd_vel", OnTwistReceived);
             _subRobotOpCmdVel = _node.CreateSubscription<geometry_msgs.msg.Twist>(
-                "/robot/operation/cmd_vel",
-                OnTwistReceived
-            );
-            Debug.Log("[KinematicOmniDrive] Subscribed to /cmd_vel and /robot/operation/cmd_vel");
+                "/robot/operation/cmd_vel", OnTwistReceived);
+            Debug.Log("[KinematicOmniDrive] Dynamic Rigidbody drive subscribed to /cmd_vel and /robot/operation/cmd_vel");
         }
 
         private void OnTwistReceived(geometry_msgs.msg.Twist twist)
         {
-            float rx = (float)twist.Linear.X;
-            float ry = (float)twist.Linear.Y;
-            float rz = (float)twist.Angular.Z;
+            SetVelocityCommand(new Vector3((float)twist.Linear.X, (float)twist.Linear.Y, 0f),
+                (float)twist.Angular.Z);
+        }
 
-            Vector3 desiredLocal = new Vector3(-ry, 0f, rx);
-            if (desiredLocal.magnitude > maxLinearSpeed)
-            {
-                desiredLocal = desiredLocal.normalized * maxLinearSpeed;
-            }
-
-            lock (StateLock)
+        // ROS coordinates: x forward, y left, positive angular z counterclockwise.
+        public void SetVelocityCommand(Vector3 linearRos, float angularRosZ)
+        {
+            if (!IsFinite(linearRos.x) || !IsFinite(linearRos.y) || !IsFinite(angularRosZ)) return;
+            Vector3 desiredLocal = Vector3.ClampMagnitude(new Vector3(-linearRos.y, 0f, linearRos.x), maxLinearSpeed);
+            lock (_commandLock)
             {
                 _targetLocalVelocity = desiredLocal;
-                _targetAngularZ = Mathf.Clamp(rz, -maxAngularSpeed, maxAngularSpeed);
-                _lastRosCmdSec = CmdWatch.Elapsed.TotalSeconds;
+                _targetAngularZ = Mathf.Clamp(angularRosZ, -maxAngularSpeed, maxAngularSpeed);
+                _lastRosCmdSec = _commandWatch.Elapsed.TotalSeconds;
             }
         }
 
-        public static void StepKinematics(float dt)
-        {
-            if (!_initialized || dt <= 0f) return;
-
-            lock (StateLock)
-            {
-                if (!_manualKeyActive && (CmdWatch.Elapsed.TotalSeconds - _lastRosCmdSec) > 0.25)
-                {
-                    _targetLocalVelocity = Vector3.zero;
-                    _targetAngularZ = 0.0f;
-                }
-
-                Vector3 prevLocalVel = _currentLocalVelocity;
-                float linAccelRate = _targetLocalVelocity.sqrMagnitude < 1e-4f ? 25.0f : 10.0f;
-                float angAccelRate = Mathf.Abs(_targetAngularZ) < 1e-4f ? 25.0f : 10.0f;
-                _currentLocalVelocity = Vector3.MoveTowards(_currentLocalVelocity, _targetLocalVelocity, linAccelRate * dt);
-                _currentAngularZ = Mathf.MoveTowards(_currentAngularZ, _targetAngularZ, angAccelRate * dt);
-
-                Vector3 localAccel = (_currentLocalVelocity - prevLocalVel) / dt;
-                SharedLinearAccelBase = localAccel;
-
-                SharedRobotYawRad += _currentAngularZ * dt;
-                if (SharedRobotYawRad > Mathf.PI) SharedRobotYawRad -= 2.0f * Mathf.PI;
-                else if (SharedRobotYawRad < -Mathf.PI) SharedRobotYawRad += 2.0f * Mathf.PI;
-
-                float halfUnityYaw = -SharedRobotYawRad * 0.5f;
-                SharedRobotRotation = new Quaternion(0f, Mathf.Sin(halfUnityYaw), 0f, Mathf.Cos(halfUnityYaw));
-
-                Vector3 worldVel = SharedRobotRotation * _currentLocalVelocity;
-                worldVel.y = 0f;
-                SharedRobotPosition += worldVel * dt;
-                SharedLinearVelocityWorld = worldVel;
-                SharedAngularVelocityRadZ = _currentAngularZ;
-            }
-        }
+        private static bool IsFinite(float value) => !float.IsNaN(value) && !float.IsInfinity(value);
 
         private void Update()
         {
-            if (_ros2Unity != null && _ros2Unity.Ok() && _node == null)
-            {
-                InitROS2();
-            }
-
+            InitROS2();
             bool forward = Input.GetKey(KeyCode.W) || Input.GetKey(KeyCode.UpArrow);
             bool backward = Input.GetKey(KeyCode.S) || Input.GetKey(KeyCode.DownArrow);
             bool left = Input.GetKey(KeyCode.A) || Input.GetKey(KeyCode.LeftArrow);
             bool right = Input.GetKey(KeyCode.D) || Input.GetKey(KeyCode.RightArrow);
             bool turnLeft = Input.GetKey(KeyCode.Q);
             bool turnRight = Input.GetKey(KeyCode.E);
-
-            if (forward || backward || left || right || turnLeft || turnRight)
+            bool active = forward || backward || left || right || turnLeft || turnRight;
+            if (_manualKeyActive && !active)
             {
-                float keyZ = (forward ? 1f : 0f) - (backward ? 1f : 0f);
-                float keyX = (right ? 1f : 0f) - (left ? 1f : 0f);
-                float keyTurn = (turnRight ? -1f : 0f) + (turnLeft ? 1f : 0f);
-                lock (StateLock)
+                // Releasing manual control brakes; do not revive an earlier ROS command.
+                lock (_commandLock) _lastRosCmdSec = -10;
+            }
+            _manualKeyActive = active;
+            _manualLocalVelocity = new Vector3((right ? 1f : 0f) - (left ? 1f : 0f), 0f,
+                (forward ? 1f : 0f) - (backward ? 1f : 0f)).normalized * maxLinearSpeed;
+            _manualAngularZ = ((turnLeft ? 1f : 0f) - (turnRight ? 1f : 0f)) * maxAngularSpeed;
+        }
+
+        private void FixedUpdate()
+        {
+            float dt = Time.fixedDeltaTime;
+            Vector3 velocity = _rb.linearVelocity;
+            _accelerationWorld = (velocity - _previousVelocityWorld) / dt;
+            _previousVelocityWorld = velocity;
+            PublishMotionState();
+
+            Vector3 localVelocity;
+            float angularZ;
+            lock (_commandLock)
+            {
+                bool fresh = _commandWatch.Elapsed.TotalSeconds - _lastRosCmdSec <= commandTimeout;
+                localVelocity = fresh ? _targetLocalVelocity : Vector3.zero;
+                angularZ = fresh ? _targetAngularZ : 0f;
+            }
+            if (_manualKeyActive)
+            {
+                localVelocity = _manualLocalVelocity;
+                angularZ = _manualAngularZ;
+            }
+
+            // Ground contact supplies traction. No drive forces while falling or airborne.
+            if (!IsGrounded)
+            {
+                ResetCommandRampToBody();
+                return;
+            }
+            float linearRate = localVelocity.sqrMagnitude < 1e-4f ? brakingAcceleration : linearAcceleration;
+            bool slowingYaw = Mathf.Abs(angularZ) < Mathf.Abs(_rampedAngularZ) || angularZ * _rampedAngularZ < 0f;
+            float angularRate = slowingYaw || Mathf.Abs(angularZ) < 1e-4f
+                ? angularBrakingAcceleration : angularAcceleration;
+            _rampedLocalVelocity = Vector3.MoveTowards(_rampedLocalVelocity, localVelocity, linearRate * dt);
+            _rampedAngularZ = Mathf.MoveTowards(_rampedAngularZ, angularZ, angularRate * dt);
+
+            Vector3 desiredWorld = _rb.rotation * _rampedLocalVelocity;
+            Vector3 planarVelocity = new Vector3(velocity.x, 0f, velocity.z);
+            Vector3 driveAcceleration = Vector3.ClampMagnitude((desiredWorld - planarVelocity) / dt, maxDriveAcceleration);
+            _rb.AddForce(driveAcceleration * _rb.mass, ForceMode.Force);
+
+            float desiredYawVelocity = -_rampedAngularZ;
+            float yawAcceleration = Mathf.Clamp((desiredYawVelocity - _rb.angularVelocity.y) / dt,
+                -maxYawDriveAcceleration, maxYawDriveAcceleration);
+            _rb.AddTorque(Vector3.up * yawAcceleration, ForceMode.Acceleration);
+        }
+
+        private void ResetCommandRampToBody()
+        {
+            _rampedLocalVelocity = Quaternion.Inverse(_rb.rotation) * _rb.linearVelocity;
+            _rampedLocalVelocity.y = 0f;
+            _rampedAngularZ = -_rb.angularVelocity.y;
+        }
+
+        private void LateUpdate()
+        {
+            // Include the completed physics step. Interpolated Transform is only for rendering.
+            PublishMotionState();
+        }
+
+        private void PublishMotionState()
+        {
+            Quaternion rotation = _rb.rotation;
+            var state = new MotionState(_rb.position, rotation, _rb.linearVelocity,
+                Quaternion.Inverse(rotation) * _accelerationWorld, -_rb.angularVelocity.y);
+            lock (StateLock) _state = state;
+        }
+
+        private void OnCollisionEnter(Collision collision) => UpdateGroundContact(collision);
+        private void OnCollisionStay(Collision collision) => UpdateGroundContact(collision);
+        private void OnCollisionExit(Collision collision) => _groundContacts.Remove(collision.collider);
+
+        private void UpdateGroundContact(Collision collision)
+        {
+            for (int i = 0; i < collision.contactCount; i++)
+            {
+                if (collision.GetContact(i).normal.y > 0.5f)
                 {
-                    _manualKeyActive = true;
-                    _targetLocalVelocity = new Vector3(keyX, 0f, keyZ).normalized * maxLinearSpeed;
-                    _targetAngularZ = keyTurn * maxAngularSpeed;
+                    _groundContacts.Add(collision.collider);
+                    return;
                 }
             }
-            else if (_manualKeyActive)
-            {
-                lock (StateLock)
-                {
-                    _manualKeyActive = false;
-                    _targetLocalVelocity = Vector3.zero;
-                    _targetAngularZ = 0.0f;
-                    _currentLocalVelocity = Vector3.zero;
-                    _currentAngularZ = 0.0f;
-                }
-            }
-
-            lock (StateLock)
-            {
-                transform.SetPositionAndRotation(SharedRobotPosition, SharedRobotRotation);
-            }
+            _groundContacts.Remove(collision.collider);
         }
     }
 }
