@@ -131,8 +131,8 @@ namespace RobotSim.Editor
             robotObj.AddComponent<KinematicOmniDrive>();
             robotObj.AddComponent<SimulationDashboard>();
 
-            // 7. Livox Mid-360 Sensor Child (/World/base_link/mid360s)
-            GameObject lidarObj = new GameObject("LivoxMid360");
+            // 7. Livox Mid-360S Sensor Child (/World/base_link/mid360s)
+            GameObject lidarObj = new GameObject("LivoxMid360S");
             lidarObj.transform.SetParent(robotObj.transform, false);
             lidarObj.transform.localPosition = (meta != null && meta.mid360LocalPositionUnity != null && meta.mid360LocalPositionUnity.Length == 3)
                 ? new Vector3(meta.mid360LocalPositionUnity[0], meta.mid360LocalPositionUnity[1], meta.mid360LocalPositionUnity[2])

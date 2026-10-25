@@ -15294,7 +15294,7 @@ GameObject:
   - component: {fileID: 1329240061}
   - component: {fileID: 1329240062}
   m_Layer: 0
-  m_Name: LivoxMid360
+  m_Name: LivoxMid360S
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
@@ -15329,11 +15329,11 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 2b9cdcdeec0c1bd8093814b15d8de7e8, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  minRange: 0.2
-  maxRange: 40
-  scanRateHz: 10
-  pointsPerScan: 20000
   frameId: livox_frame
+  useGpu: 1
+  depthResolution: 512
+  baseFrame: {fileID: 0}
+  sensorPositionRos: {x: 0.24, y: -0.25, z: 1.09}
 --- !u!1 &1353390360
 GameObject:
   m_ObjectHideFlags: 0

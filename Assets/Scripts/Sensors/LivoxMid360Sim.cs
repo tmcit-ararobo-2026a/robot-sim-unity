@@ -1,7 +1,7 @@
 using System;
 using System.Diagnostics;
+using System.Collections.Generic;
 using System.IO;
-using System.Threading.Tasks;
 using UnityEngine;
 using ROS2;
 using RobotSim.Control;
@@ -12,84 +12,44 @@ namespace RobotSim.Sensors
 {
     public class LivoxMid360Sim : MonoBehaviour
     {
-        [Header("Lidar Specs")]
-        [SerializeField] private float minRange = 0.2f;
-        [SerializeField] private float maxRange = 40.0f;
-        [SerializeField] private float scanRateHz = 10.0f;
-        [SerializeField] private int pointsPerScan = 20000;
+        // Fixed MID-360S acquisition specifications; old scene values for the former
+        // 0.2 m / 40 m limits cannot silently override these device limits.
+        public const float MinRange = 0.1f;
+        public const float MaxRange = 100f;
+        public const int PointRate = 200000;
+        public const int PointsPerScan = 20000;
+        public const double ScanPeriod = 0.1;
+        public const double ImuPeriod = 0.005;
         [SerializeField] private string frameId = "livox_frame";
 
-        private struct FieldBox
+        [Header("Scene Capture")]
+        [SerializeField] private bool useGpu = true;
+        [SerializeField, Range(64, 2048)] private int depthResolution = 1024;
+        [Tooltip("Pose reference only. All robot surfaces remain visible to LiDAR.")]
+        [SerializeField] private Transform baseFrame;
+        [Tooltip("ROS base_link coordinates, matching the external base_link -> livox_frame TF.")]
+        [SerializeField] private Vector3 sensorPositionRos = new Vector3(0.24f, -0.25f, 1.09f);
+
+        // Capture is a scene snapshot, without motion distortion. Per-ray timestamps
+        // retain the existing scan-period convention for downstream localization.
+        private sealed class ScanFrame
         {
-            public float minX, maxX, minY, maxY, minZ, maxZ;
-            public FieldBox(float cx, float cy, float zMin, float zMax, float halfX, float halfY)
-            {
-                minX = cx - halfX;
-                maxX = cx + halfX;
-                minY = cy - halfY;
-                maxY = cy + halfY;
-                minZ = zMin;
-                maxZ = zMax;
-            }
+            public Vector2[] Returns;
+            public int StartIndex;
+            public double EndTime;
+            public double Period;
         }
 
-        private struct FieldCylinder
-        {
-            public float cx, cy, r, rSq, minZ, maxZ;
-            public FieldCylinder(float x, float y, float zMin, float zMax, float radius)
-            {
-                cx = x;
-                cy = y;
-                r = radius;
-                rSq = radius * radius;
-                minZ = zMin;
-                maxZ = zMax;
-            }
-        }
+        private Mid360SceneSampler _sceneSampler;
+        private readonly object _scanLock = new object();
+        private readonly Queue<ScanFrame> _completedScans = new Queue<ScanFrame>();
+        private Vector3[] _worldDirections;
+        private double _nextScanTime;
+        private bool _destroying;
 
-        // Exact 3D geometry of NHK2026 field matching nhk2026_map.json and main.usd
-        private static readonly FieldBox[] FieldBoxes = new FieldBox[]
-        {
-            new FieldBox( 0.000f,  5.775f, 0.000f, 0.024f, 5.400f, 0.075f),
-            new FieldBox( 0.000f, -5.775f, 0.000f, 0.024f, 5.400f, 0.075f),
-            new FieldBox(-5.325f,  0.000f, 0.000f, 0.024f, 0.075f, 5.700f),
-            new FieldBox( 5.325f,  0.000f, 0.000f, 0.024f, 0.075f, 5.700f),
-            new FieldBox( 0.000f,  5.712f, 0.024f, 0.150f, 5.400f, 0.012f),
-            new FieldBox( 0.000f, -5.712f, 0.024f, 0.150f, 5.400f, 0.012f),
-            new FieldBox(-5.262f,  0.000f, 0.024f, 0.150f, 0.012f, 5.700f),
-            new FieldBox( 5.262f,  0.000f, 0.024f, 0.150f, 0.012f, 5.700f),
-            new FieldBox( 0.000f,  0.000f, 0.000f, 0.200f, 5.250f, 0.300f),
-            new FieldBox(-1.270f,  1.480f, 0.000f, 0.600f, 0.150f, 0.150f),
-            new FieldBox(-1.270f, -1.480f, 0.000f, 0.600f, 0.150f, 0.150f),
-            new FieldBox( 2.370f,  1.480f, 0.000f, 0.300f, 0.150f, 0.150f),
-            new FieldBox( 2.370f, -1.480f, 0.000f, 0.300f, 0.150f, 0.150f),
-            new FieldBox( 0.550f,  4.980f, 0.000f, 0.807f, 0.180f, 0.200f),
-            new FieldBox( 0.550f, -4.980f, 0.000f, 0.807f, 0.180f, 0.200f),
-            new FieldBox(-2.295f,  3.855f, 0.000f, 0.760f, 0.325f, 0.225f),
-            new FieldBox(-2.295f, -3.855f, 0.000f, 0.760f, 0.325f, 0.225f),
-            new FieldBox( 3.395f,  3.855f, 0.000f, 0.760f, 0.325f, 0.225f),
-            new FieldBox( 3.395f, -3.855f, 0.000f, 0.760f, 0.325f, 0.225f),
-            new FieldBox(-4.895f,  5.445f, 0.000f, 0.760f, 0.325f, 0.225f),
-            new FieldBox(-4.895f, -5.445f, 0.000f, 0.760f, 0.325f, 0.225f),
-            new FieldBox(-4.750f,  1.105f, 0.000f, 0.760f, 0.325f, 0.225f),
-            new FieldBox(-4.750f, -1.105f, 0.000f, 0.760f, 0.325f, 0.225f),
-            new FieldBox( 0.550f,  3.025f, 0.000f, 0.180f, 0.195f, 0.195f),
-            new FieldBox( 0.850f,  3.025f, 1.200f, 3.000f, 0.300f, 0.020f),
-            new FieldBox( 0.550f, -3.025f, 0.000f, 0.180f, 0.195f, 0.195f),
-            new FieldBox( 0.850f, -3.025f, 1.200f, 3.000f, 0.300f, 0.020f)
-        };
-
-        private static readonly FieldCylinder[] FieldCylinders = new FieldCylinder[]
-        {
-            new FieldCylinder( 0.550f,  0.870f, 0.000f, 0.255f, 0.1365f),
-            new FieldCylinder( 0.550f, -0.870f, 0.000f, 0.255f, 0.1365f),
-            new FieldCylinder(-1.270f,  1.480f, 0.600f, 0.855f, 0.1365f),
-            new FieldCylinder(-1.270f, -1.480f, 0.600f, 0.855f, 0.1365f),
-            new FieldCylinder( 2.370f,  1.480f, 0.300f, 0.555f, 0.1365f),
-            new FieldCylinder( 2.370f, -1.480f, 0.300f, 0.555f, 0.1365f),
-            new FieldCylinder( 0.550f,  3.025f, 0.180f, 3.000f, 0.0300f),
-            new FieldCylinder( 0.550f, -3.025f, 0.180f, 3.000f, 0.0300f)
-        };
+        public bool UsingGpu => _sceneSampler != null && _sceneSampler.UsingGpu;
+        public long PublishedScanCount { get; private set; }
+        public int LastPublishedPointCount { get; private set; }
 
         public static double CurrentSimTimeSec
         {
@@ -127,7 +87,9 @@ namespace RobotSim.Sensors
         private Stopwatch _wallClock;
         private double _lastStepWallSec = 0.0;
         private double _imuAccumSec = 0.0;
-        private double _scanAccumSec = 0.0;
+        private double _clockAccumSec;
+        private double _lastImuTime;
+        private float _lastImuAngularVelocity;
         private bool _executableRegistered = false;
 
         private void Awake()
@@ -146,16 +108,26 @@ namespace RobotSim.Sensors
         private void Start()
         {
             LoadPattern();
+            if (baseFrame == null)
+            {
+                var drive = GetComponentInParent<KinematicOmniDrive>();
+                if (drive != null) baseFrame = drive.transform;
+            }
+            _sceneSampler = new Mid360SceneSampler(useGpu, depthResolution);
+            Debug.Log($"[LivoxMid360Sim] Scene capture: {(_sceneSampler.UsingGpu ? "GPU depth + compute" : "CPU physics")}");
             InitROS2();
         }
 
         private void OnDestroy()
         {
+            _destroying = true;
             if (_ros2Unity != null && _executableRegistered)
             {
                 _ros2Unity.UnregisterExecutable(OnBackgroundTick);
                 _executableRegistered = false;
             }
+            _sceneSampler?.Dispose();
+            lock (_scanLock) _completedScans.Clear();
         }
 
         private void LoadPattern()
@@ -163,12 +135,12 @@ namespace RobotSim.Sensors
             string path = Path.Combine(Application.streamingAssetsPath, "mid360_pattern.bin");
             if (!File.Exists(path))
             {
-                Debug.LogWarning($"[LivoxMid360Sim] Pattern file not found at {path}, generating procedural pattern");
-                GenerateProceduralPattern();
-                return;
+                throw new FileNotFoundException("MID360 scan pattern is required; a synthetic substitute is not a calibrated MID-360S scan.", path);
             }
 
             byte[] bytes = File.ReadAllBytes(path);
+            if (bytes.Length == 0 || bytes.Length % (sizeof(float) * 2) != 0)
+                throw new InvalidDataException("MID360 scan pattern must contain azimuth/elevation float32 pairs.");
             _totalRays = bytes.Length / (sizeof(float) * 2);
             _rayDirBaseRos = new Vector3[_totalRays];
             _rayDirLivoxRos = new Vector3[_totalRays];
@@ -179,6 +151,9 @@ namespace RobotSim.Sensors
                 {
                     float azimuth = reader.ReadSingle();
                     float elevation = reader.ReadSingle();
+                    if (float.IsNaN(azimuth) || float.IsInfinity(azimuth) ||
+                        float.IsNaN(elevation) || float.IsInfinity(elevation))
+                        throw new InvalidDataException("MID360 scan pattern contains a non-finite angle.");
 
                     float cosEl = Mathf.Cos(elevation);
                     float rx = cosEl * Mathf.Cos(azimuth);
@@ -191,26 +166,6 @@ namespace RobotSim.Sensors
                 }
             }
             Debug.Log($"[LivoxMid360Sim] Loaded {_totalRays} ray directions from mid360_pattern.bin");
-        }
-
-        private void GenerateProceduralPattern()
-        {
-            _totalRays = 100000;
-            _rayDirBaseRos = new Vector3[_totalRays];
-            _rayDirLivoxRos = new Vector3[_totalRays];
-            for (int i = 0; i < _totalRays; i++)
-            {
-                float t = i * 0.0001f;
-                float azimuth = (t * 7297.0f) % (2.0f * Mathf.PI);
-                float elevation = Mathf.Lerp(-7.0f, 52.0f, (Mathf.Sin(t * 1310.0f) + 1.0f) * 0.5f) * Mathf.Deg2Rad;
-                float cosEl = Mathf.Cos(elevation);
-                float rx = cosEl * Mathf.Cos(azimuth);
-                float ry = cosEl * Mathf.Sin(azimuth);
-                float rz = Mathf.Sin(elevation);
-                Vector3 dLivox = new Vector3(rx, ry, rz).normalized;
-                _rayDirLivoxRos[i] = dLivox;
-                _rayDirBaseRos[i] = RotateLivoxToBase(dLivox.x, dLivox.y, dLivox.z);
-            }
         }
 
         private void InitROS2()
@@ -233,10 +188,43 @@ namespace RobotSim.Sensors
 
         private void Update()
         {
-            if (_ros2Unity != null && _ros2Unity.Ok() && _node == null)
+            if (_node == null) InitROS2();
+        }
+
+        // Run after drive/opponent/cloth Update so capture sees their displayed poses.
+        private void LateUpdate()
+        {
+            if (_sceneSampler == null || _sceneSampler.IsBusy || _cloudPub == null || _totalRays == 0) return;
+            double now = CurrentSimTimeSec;
+            if (now < _nextScanTime) return;
+            double period = ScanPeriod;
+            // Advance the deadline, rather than adding a period to this frame's
+            // late arrival; otherwise a 25 FPS editor turns 10 Hz into about 8 Hz.
+            if (_nextScanTime <= 0) _nextScanTime = now;
+            _nextScanTime += period;
+            if (_nextScanTime <= now) _nextScanTime = now + period;
+            int count = PointsPerScan;
+            if (_worldDirections == null || _worldDirections.Length != count) _worldDirections = new Vector3[count];
+            int startIndex = _scanStartIndex;
+            _scanStartIndex = (_scanStartIndex + count) % _totalRays;
+
+            // Use the owning robot's actual Unity pose, matching the meshes captured
+            // this frame, rather than racing the background kinematics state.
+            Transform baseTransform = baseFrame != null ? baseFrame : transform;
+            Quaternion rotation = baseTransform.rotation;
+            Vector3 origin = baseTransform.position + rotation * new Vector3(-sensorPositionRos.y, sensorPositionRos.z, sensorPositionRos.x);
+            for (int i = 0; i < count; i++)
             {
-                InitROS2();
+                Vector3 d = _rayDirBaseRos[(startIndex + i) % _totalRays];
+                _worldDirections[i] = rotation * new Vector3(-d.y, d.z, d.x);
             }
+            _sceneSampler.TryScan(origin, _worldDirections, MinRange, MaxRange, ~0, returns =>
+            {
+                if (_destroying) return;
+                // Preserve every completed raw scan. Do not replace or downsample it.
+                lock (_scanLock)
+                    _completedScans.Enqueue(new ScanFrame { Returns = returns, StartIndex = startIndex, EndTime = now, Period = period });
+            });
         }
 
         private void OnBackgroundTick()
@@ -245,7 +233,7 @@ namespace RobotSim.Sensors
 
             double nowWall = _wallClock.Elapsed.TotalSeconds;
             double delta = nowWall - _lastStepWallSec;
-            if (delta < 0.008) return;
+            if (delta < 0.004) return;
             _lastStepWallSec = nowWall;
 
             if (delta > 0.05) delta = 0.01;
@@ -260,24 +248,26 @@ namespace RobotSim.Sensors
             KinematicOmniDrive.StepKinematics((float)delta);
             SimpleClothShooter.StepClothPhysics((float)delta);
 
-            PublishClock(currentSim);
+            _clockAccumSec += delta;
+            if (_clockAccumSec >= 0.01)
+            {
+                _clockAccumSec %= 0.01;
+                PublishClock(currentSim);
+            }
 
             _imuAccumSec += delta;
-            if (_imuAccumSec >= 0.0095)
+            while (_imuAccumSec >= ImuPeriod)
             {
-                _imuAccumSec = 0.0;
-                PublishImu(currentSim);
+                _imuAccumSec -= ImuPeriod;
+                PublishImu(currentSim - _imuAccumSec);
             }
 
-            double scanPeriod = 1.0 / scanRateHz;
-            _scanAccumSec += delta;
-            if (_scanAccumSec >= scanPeriod)
+            ScanFrame scan;
+            lock (_scanLock)
             {
-                _scanAccumSec -= scanPeriod;
-                if (_scanAccumSec > scanPeriod) _scanAccumSec = 0.0;
-                PublishImu(currentSim);
-                PublishPointCloud(currentSim, scanPeriod);
+                scan = _completedScans.Count > 0 ? _completedScans.Dequeue() : null;
             }
+            if (scan != null) PublishPointCloud(scan);
         }
 
         private void PublishClock(double simTimeSec)
@@ -325,216 +315,89 @@ namespace RobotSim.Sensors
             imu.Angular_velocity.Z = omegaLivox.z;
 
             Vector3 accelBaseUnity = KinematicOmniDrive.SharedLinearAccelBase;
-            Vector3 accLivox = RotateBaseToLivox(accelBaseUnity.z, -accelBaseUnity.x, accelBaseUnity.y + 9.81f);
+            Vector3 localVelocityUnity = Quaternion.Inverse(KinematicOmniDrive.SharedRobotRotation) *
+                KinematicOmniDrive.SharedLinearVelocityWorld;
+            Vector3 localVelocityRos = new Vector3(localVelocityUnity.z, -localVelocityUnity.x, localVelocityUnity.y);
+            Vector3 omegaBase = new Vector3(0, 0, wzBase);
+            float alpha = _lastImuTime > 0 && simTimeSec > _lastImuTime
+                ? (wzBase - _lastImuAngularVelocity) / (float)(simTimeSec - _lastImuTime) : 0f;
+            _lastImuTime = simTimeSec;
+            _lastImuAngularVelocity = wzBase;
+            // MID-360S manual: IMU chip is (11.0, 23.29, -44.12) mm in LiDAR frame.
+            Vector3 imuLeverArm = sensorPositionRos + RotateLivoxToBase(0.011f, 0.02329f, -0.04412f);
+            Vector3 specificForce = new Vector3(accelBaseUnity.z, -accelBaseUnity.x, accelBaseUnity.y + 9.81f)
+                + Vector3.Cross(omegaBase, localVelocityRos)
+                + Vector3.Cross(new Vector3(0, 0, alpha), imuLeverArm)
+                + Vector3.Cross(omegaBase, Vector3.Cross(omegaBase, imuLeverArm));
+            Vector3 accLivox = RotateBaseToLivox(specificForce.x, specificForce.y, specificForce.z);
             imu.Linear_acceleration.X = accLivox.x;
             imu.Linear_acceleration.Y = accLivox.y;
             imu.Linear_acceleration.Z = accLivox.z;
+            // The hardware outputs gyroscope/accelerometer measurements, not an attitude estimate.
+            imu.Orientation_covariance[0] = -1;
 
             _imuPub.Publish(imu);
         }
 
-        private static float RaycastFieldInMap(float ox, float oy, float oz, float dx, float dy, float dz, float minR, float maxR)
+        private void PublishPointCloud(ScanFrame scan)
         {
-            float bestT = maxR + 1.0f;
-
-            // 1. Floor plane z = 0
-            if (dz < -1e-5f)
-            {
-                float tFloor = -oz / dz;
-                if (tFloor >= minR && tFloor < bestT)
-                {
-                    float fx = ox + tFloor * dx;
-                    float fy = oy + tFloor * dy;
-                    if (fx >= -5.40f && fx <= 5.40f && fy >= -5.85f && fy <= 5.85f)
-                    {
-                        bestT = tFloor;
-                    }
-                }
-            }
-
-            float invDx = Mathf.Abs(dx) > 1e-6f ? 1.0f / dx : (dx >= 0f ? 1e6f : -1e6f);
-            float invDy = Mathf.Abs(dy) > 1e-6f ? 1.0f / dy : (dy >= 0f ? 1e6f : -1e6f);
-            float invDz = Mathf.Abs(dz) > 1e-6f ? 1.0f / dz : (dz >= 0f ? 1e6f : -1e6f);
-
-            // 2. Field Boxes
-            int numBoxes = FieldBoxes.Length;
-            for (int i = 0; i < numBoxes; i++)
-            {
-                FieldBox b = FieldBoxes[i];
-                float tx1 = (b.minX - ox) * invDx;
-                float tx2 = (b.maxX - ox) * invDx;
-                float tmin = tx1 < tx2 ? tx1 : tx2;
-                float tmax = tx1 > tx2 ? tx1 : tx2;
-
-                float ty1 = (b.minY - oy) * invDy;
-                float ty2 = (b.maxY - oy) * invDy;
-                float tyMin = ty1 < ty2 ? ty1 : ty2;
-                float tyMax = ty1 > ty2 ? ty1 : ty2;
-
-                if (tyMin > tmin) tmin = tyMin;
-                if (tyMax < tmax) tmax = tyMax;
-
-                if (tmax < tmin || tmax < minR || tmin >= bestT) continue;
-
-                float tz1 = (b.minZ - oz) * invDz;
-                float tz2 = (b.maxZ - oz) * invDz;
-                float tzMin = tz1 < tz2 ? tz1 : tz2;
-                float tzMax = tz1 > tz2 ? tz1 : tz2;
-
-                if (tzMin > tmin) tmin = tzMin;
-                if (tzMax < tmax) tmax = tzMax;
-
-                if (tmax >= tmin)
-                {
-                    float tHit = tmin >= minR ? tmin : tmax;
-                    if (tHit >= minR && tHit < bestT)
-                    {
-                        bestT = tHit;
-                    }
-                }
-            }
-
-            // 3. Field Cylinders
-            float a = dx * dx + dy * dy;
-            if (a > 1e-6f)
-            {
-                float invA = 1.0f / a;
-                int numCyls = FieldCylinders.Length;
-                for (int i = 0; i < numCyls; i++)
-                {
-                    FieldCylinder c = FieldCylinders[i];
-                    float ocx = ox - c.cx;
-                    float ocy = oy - c.cy;
-                    float halfB = ocx * dx + ocy * dy;
-                    float cTerm = ocx * ocx + ocy * ocy - c.rSq;
-                    float disc = halfB * halfB - a * cTerm;
-                    if (disc < 0f) continue;
-
-                    float sqrtDisc = Mathf.Sqrt(disc);
-                    float t1 = (-halfB - sqrtDisc) * invA;
-                    if (t1 >= minR && t1 < bestT)
-                    {
-                        float hz = oz + t1 * dz;
-                        if (hz >= c.minZ && hz <= c.maxZ)
-                        {
-                            bestT = t1;
-                        }
-                    }
-                }
-            }
-
-            return bestT <= maxR ? bestT : -1.0f;
+            var cloud = BuildRawPointCloud(scan.Returns, _rayDirLivoxRos, scan.StartIndex,
+                scan.EndTime - scan.Period, frameId);
+            _cloudPub.Publish(cloud);
+            LastPublishedPointCount = (int)cloud.Width;
+            PublishedScanCount++;
         }
 
-        private void PublishPointCloud(double endSimTimeSec, double scanPeriodSec)
+        // ROS adapter only: preserve sample count/order, self hits, floor hits and
+        // missing returns. No segmentation, point selection or feature extraction.
+        public static sensor_msgs.msg.PointCloud2 BuildRawPointCloud(Vector2[] returns, Vector3[] pattern,
+            int startIndex, double startSimTimeSec, string frame)
         {
-            if (_rayDirBaseRos == null || _totalRays == 0) return;
-
-            Vector3 basePosUnity = KinematicOmniDrive.SharedRobotPosition;
-
-            // Convert Unity robot pose to ROS map frame (x_map = z_unity, y_map = -x_unity, yaw_map = SharedRobotYawRad)
-            float robotX = basePosUnity.z;
-            float robotY = -basePosUnity.x;
-            float robotYaw = KinematicOmniDrive.SharedRobotYawRad;
-            float cosY = Mathf.Cos(robotYaw);
-            float sinY = Mathf.Sin(robotYaw);
-
-            // Sensor origin in ROS map frame (livox_tf: x=0.24, y=-0.25, z=1.09)
-            float sensorOx = robotX + cosY * 0.24f - sinY * (-0.25f);
-            float sensorOy = robotY + sinY * 0.24f + cosY * (-0.25f);
-            float sensorOz = 1.09f;
-
-            int count = pointsPerScan;
-            int startIndex = _scanStartIndex;
-            _scanStartIndex = (_scanStartIndex + count) % _totalRays;
-
-            float[] hitDistances = new float[count];
-            float minR = minRange;
-            float maxR = maxRange;
-
-            Parallel.For(0, count, i =>
-            {
-                int rayIdx = (startIndex + i) % _totalRays;
-                Vector3 dBase = _rayDirBaseRos[rayIdx];
-
-                // Reject self-hits on robot chassis (radius < 0.65m and z_base in [0.05, 1.25])
-                float dxMap = cosY * dBase.x - sinY * dBase.y;
-                float dyMap = sinY * dBase.x + cosY * dBase.y;
-                float dzMap = dBase.z;
-
-                float t = RaycastFieldInMap(sensorOx, sensorOy, sensorOz, dxMap, dyMap, dzMap, minR, maxR);
-                if (t > 0f)
-                {
-                    float xb = 0.24f + t * dBase.x;
-                    float yb = -0.25f + t * dBase.y;
-                    float zb = 1.09f + t * dBase.z;
-                    if (xb * xb + yb * yb < 0.65f * 0.65f && zb > 0.05f && zb < 1.25f)
-                    {
-                        t = -1.0f;
-                    }
-                }
-                hitDistances[i] = t;
-            });
-
-            double startSimTimeSec = endSimTimeSec - scanPeriodSec;
+            int count = returns.Length;
             int headerSec = (int)startSimTimeSec;
             uint headerNanosec = (uint)((startSimTimeSec - headerSec) * 1e9);
-
-            int pointStep = 24;
+            const int pointStep = 25;
             byte[] pointData = new byte[count * pointStep];
-            int validPoints = 0;
-
+            using var pointWriter = new BinaryWriter(new MemoryStream(pointData));
             for (int i = 0; i < count; i++)
             {
-                float dist = hitDistances[i];
-                if (dist <= 0f) continue;
-
-                int rayIdx = (startIndex + i) % _totalRays;
-                Vector3 dBase = _rayDirBaseRos[rayIdx];
-                float zb = 1.09f + dist * dBase.z;
-                if (zb <= 0.02f && (i & 3) != 0) continue;
-
-                Vector3 ptLivox = _rayDirLivoxRos[rayIdx] * dist;
-                float intensity = Mathf.Clamp01(1.0f - dist / maxR) * 255.0f;
-                double ptTimeSec = startSimTimeSec + ((double)i / Math.Max(1, count - 1)) * scanPeriodSec;
-                double stampNs = ptTimeSec * 1e9;
-
-                int offset = validPoints * pointStep;
-                Buffer.BlockCopy(BitConverter.GetBytes(ptLivox.x), 0, pointData, offset + 0, 4);
-                Buffer.BlockCopy(BitConverter.GetBytes(ptLivox.y), 0, pointData, offset + 4, 4);
-                Buffer.BlockCopy(BitConverter.GetBytes(ptLivox.z), 0, pointData, offset + 8, 4);
-                Buffer.BlockCopy(BitConverter.GetBytes(intensity), 0, pointData, offset + 12, 4);
-                Buffer.BlockCopy(BitConverter.GetBytes(stampNs), 0, pointData, offset + 16, 8);
-
-                validPoints++;
-                if (validPoints >= 5500) break;
+                float dist = returns[i].x;
+                int rayIdx = (startIndex + i) % pattern.Length;
+                // The device outputs (0,0,0) on no return. Keep its sample and time;
+                // zero returns, floor hits and own-robot hits are never filtered out.
+                Vector3 ptLivox = dist > 0f ? pattern[rayIdx] * dist : Vector3.zero;
+                float intensity = dist > 0f ? returns[i].y : 0f;
+                double stampNs = (startSimTimeSec + (double)i / PointRate) * 1e9;
+                pointWriter.Write(ptLivox.x);
+                pointWriter.Write(ptLivox.y);
+                pointWriter.Write(ptLivox.z);
+                pointWriter.Write(intensity);
+                pointWriter.Write(stampNs);
+                pointWriter.Write((byte)0); // Normal ideal return. No synthetic weather/noise classification.
             }
 
-            if (validPoints == 0) return;
-
-            byte[] trimmedData = new byte[validPoints * pointStep];
-            Buffer.BlockCopy(pointData, 0, trimmedData, 0, trimmedData.Length);
-
             sensor_msgs.msg.PointCloud2 cloud = new sensor_msgs.msg.PointCloud2();
-            cloud.Header.Frame_id = frameId;
+            cloud.Header.Frame_id = frame;
             cloud.Header.Stamp.Sec = headerSec;
             cloud.Header.Stamp.Nanosec = headerNanosec;
             cloud.Height = 1;
-            cloud.Width = (uint)validPoints;
+            cloud.Width = (uint)count;
             cloud.Is_bigendian = false;
             cloud.Point_step = (uint)pointStep;
-            cloud.Row_step = (uint)(validPoints * pointStep);
+            cloud.Row_step = (uint)(count * pointStep);
             cloud.Is_dense = true;
-            cloud.Data = trimmedData;
+            cloud.Data = pointData;
 
-            cloud.Fields = new sensor_msgs.msg.PointField[5];
+            cloud.Fields = new sensor_msgs.msg.PointField[6];
             cloud.Fields[0] = new sensor_msgs.msg.PointField { Name = "x", Offset = 0, Datatype = 7, Count = 1 };
             cloud.Fields[1] = new sensor_msgs.msg.PointField { Name = "y", Offset = 4, Datatype = 7, Count = 1 };
             cloud.Fields[2] = new sensor_msgs.msg.PointField { Name = "z", Offset = 8, Datatype = 7, Count = 1 };
             cloud.Fields[3] = new sensor_msgs.msg.PointField { Name = "intensity", Offset = 12, Datatype = 7, Count = 1 };
             cloud.Fields[4] = new sensor_msgs.msg.PointField { Name = "timestamp", Offset = 16, Datatype = 8, Count = 1 };
 
-            _cloudPub.Publish(cloud);
+            cloud.Fields[5] = new sensor_msgs.msg.PointField { Name = "tag", Offset = 24, Datatype = 2, Count = 1 };
+
+            return cloud;
         }
     }
 }
