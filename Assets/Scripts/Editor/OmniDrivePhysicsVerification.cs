@@ -218,7 +218,7 @@ namespace RobotSim.Editor
                     _report.movableFieldPropsTested++;
                 }
             }
-            foreach (string fixedName in new[] { "field_base", "GroundPlaneCollider" })
+            foreach (string fixedName in new[] { "field_base" })
             {
                 Check(!FieldPropPhysics.TryGetMass(fixedName, 8, 5, 0.6f, 10, 3, out _),
                     "Fixed structure was classified as movable: " + fixedName);
@@ -226,6 +226,11 @@ namespace RobotSim.Editor
                 Check(fixedObject != null && fixedObject.GetComponent<Rigidbody>() == null,
                     "Fixed structure acquired a Rigidbody: " + fixedName);
             }
+            var fieldBase = GameObject.Find("field_base");
+            var groundPhysics = fieldBase.GetComponent<FieldGroundPhysics>();
+            Check(groundPhysics != null && groundPhysics.FloorCollider != null &&
+                groundPhysics.FloorCollider.gameObject == fieldBase && groundPhysics.FloorCollider.attachedRigidbody == null,
+                "The fixed floor collider must belong to field_base.");
             // Cross the paint/tile edge that previously stopped the player short of desk1.
             bool first = Physics.Raycast(new Vector3(3.86f, 0.1f, -3.08f), Vector3.down, out RaycastHit a,
                 0.5f, ~0, QueryTriggerInteraction.Ignore);

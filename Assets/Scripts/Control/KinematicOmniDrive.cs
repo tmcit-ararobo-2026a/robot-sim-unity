@@ -28,6 +28,7 @@ namespace RobotSim.Control
         [Header("Chassis Contact")]
         [Tooltip("Low rolling resistance for the chassis-level omni-wheel approximation.")]
         [SerializeField, Range(0f, 1f)] private float rollingFriction = 0.05f;
+        [SerializeField, HideInInspector] private bool bodyPhysicsBaked;
 
         public readonly struct MotionState
         {
@@ -93,29 +94,40 @@ namespace RobotSim.Control
         {
             Application.runInBackground = true;
             _rb = GetComponent<Rigidbody>();
+            if (!bodyPhysicsBaked) ConfigureBodyPhysics();
+            _rb.maxAngularVelocity = Mathf.Max(_rb.maxAngularVelocity, maxAngularSpeed);
+
+            // A default box's static/patch friction locks strafing and yaw. Approximate
+            // freely rolling omni wheels while keeping collision support and impulses.
+            foreach (var collider in GetComponentsInChildren<Collider>())
+            {
+                if (collider.attachedRigidbody != _rb || collider.isTrigger || collider.sharedMaterial != null) continue;
+                if (_rollingMaterial == null)
+                {
+                    _rollingMaterial = new PhysicsMaterial("Omni drive rolling contact")
+                    {
+                        staticFriction = rollingFriction,
+                        dynamicFriction = rollingFriction,
+                        frictionCombine = PhysicsMaterialCombine.Minimum,
+                        bounciness = 0f,
+                        bounceCombine = PhysicsMaterialCombine.Minimum
+                    };
+                }
+                collider.sharedMaterial = _rollingMaterial;
+                _rollingColliders.Add(collider);
+            }
+        }
+
+        public void ConfigureBodyPhysics()
+        {
+            _rb = GetComponent<Rigidbody>();
             _rb.isKinematic = false;
             _rb.useGravity = true;
             _rb.constraints = RigidbodyConstraints.FreezeRotationX | RigidbodyConstraints.FreezeRotationZ;
             _rb.interpolation = RigidbodyInterpolation.Interpolate;
             _rb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
             _rb.maxAngularVelocity = Mathf.Max(_rb.maxAngularVelocity, maxAngularSpeed);
-
-            // A default box's static/patch friction locks strafing and yaw. Approximate
-            // freely rolling omni wheels while keeping collision support and impulses.
-            _rollingMaterial = new PhysicsMaterial("Omni drive rolling contact")
-            {
-                staticFriction = rollingFriction,
-                dynamicFriction = rollingFriction,
-                frictionCombine = PhysicsMaterialCombine.Minimum,
-                bounciness = 0f,
-                bounceCombine = PhysicsMaterialCombine.Minimum
-            };
-            foreach (var collider in GetComponentsInChildren<Collider>())
-            {
-                if (collider.attachedRigidbody != _rb || collider.isTrigger || collider.sharedMaterial != null) continue;
-                collider.sharedMaterial = _rollingMaterial;
-                _rollingColliders.Add(collider);
-            }
+            bodyPhysicsBaked = !Application.isPlaying;
         }
 
         private void OnDestroy()

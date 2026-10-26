@@ -43,13 +43,17 @@ namespace RobotSim.Environment
             foreach (var collider in geometry.GetComponents<Collider>())
             {
                 collider.enabled = false;
-                UnityEngine.Object.Destroy(collider);
+                if (Application.isPlaying) UnityEngine.Object.Destroy(collider);
+                else UnityEngine.Object.DestroyImmediate(collider);
             }
 
-            if (propName.Contains("platform")) Box(root, new Bounds(Vector3.zero, bounds.size));
-            else if (propName.StartsWith("bucket", StringComparison.Ordinal)) BuildBucket(root.transform, bounds.size);
-            else if (propName.StartsWith("flag", StringComparison.Ordinal)) BuildFlag(root.transform, mesh);
-            else BuildCadParts(root, mesh);
+            if (!CompactBoxColliders.TryBuild(root, mesh, true))
+            {
+                if (propName.Contains("platform")) Box(root, new Bounds(Vector3.zero, bounds.size));
+                else if (propName.StartsWith("bucket", StringComparison.Ordinal)) BuildBucket(root.transform, bounds.size);
+                else if (propName.StartsWith("flag", StringComparison.Ordinal)) BuildFlag(root.transform, mesh);
+                else BuildCadParts(root, mesh);
+            }
 
             var body = root.AddComponent<Rigidbody>();
             body.mass = mass;

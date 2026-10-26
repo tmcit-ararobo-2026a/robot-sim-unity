@@ -5,22 +5,106 @@ namespace RobotSim.Environment
 {
     // CAD paint/tile strips are 1 mm solids. Their vertical edges must not catch
     // sliding furniture or the chassis; collision uses one seamless floor instead.
-    [RequireComponent(typeof(MeshCollider))]
+    [RequireComponent(typeof(MeshFilter))]
     public class FieldGroundPhysics : MonoBehaviour
     {
+        [SerializeField, HideInInspector] private bool collisionBaked;
+        [SerializeField, HideInInspector] private BoxCollider floorCollider;
         private Mesh _originalMesh;
         private Mesh _collisionMesh;
         private MeshCollider _collider;
         private BoxCollider _centralStep;
         public float FloorHeight { get; private set; }
+        public BoxCollider FloorCollider => floorCollider;
+
+        public BoxCollider EnsureFloorCollider(BoxCollider legacyGround = null)
+        {
+            if (floorCollider != null) return floorCollider;
+            floorCollider = gameObject.AddComponent<BoxCollider>();
+            if (legacyGround != null)
+            {
+                floorCollider.center = transform.InverseTransformPoint(legacyGround.transform.TransformPoint(legacyGround.center));
+                Vector3 scale = legacyGround.transform.lossyScale;
+                Vector3 targetScale = transform.lossyScale;
+                floorCollider.size = Vector3.Scale(legacyGround.size,
+                    new Vector3(Mathf.Abs(scale.x / targetScale.x), Mathf.Abs(scale.y / targetScale.y),
+                        Mathf.Abs(scale.z / targetScale.z)));
+                floorCollider.sharedMaterial = legacyGround.sharedMaterial;
+                floorCollider.isTrigger = legacyGround.isTrigger;
+                floorCollider.enabled = legacyGround.enabled;
+                floorCollider.contactOffset = legacyGround.contactOffset;
+                floorCollider.includeLayers = legacyGround.includeLayers;
+                floorCollider.excludeLayers = legacyGround.excludeLayers;
+                floorCollider.layerOverridePriority = legacyGround.layerOverridePriority;
+            }
+            else
+            {
+                floorCollider.size = new Vector3(1f, 0.1f, 1f);
+                FitFloorFootprint(floorCollider);
+                AlignGround(floorCollider);
+            }
+            return floorCollider;
+        }
+
+        public void FitFloorToField() => FitFloorFootprint(EnsureFloorCollider());
+
+        private void FitFloorFootprint(BoxCollider ground)
+        {
+            var mesh = GetComponent<MeshFilter>().sharedMesh;
+            if (mesh == null) return;
+            Bounds bounds = mesh.bounds;
+            Vector3 center = ground.center;
+            center.x = bounds.center.x;
+            center.z = bounds.center.z;
+            ground.center = center;
+            Vector3 size = ground.size;
+            size.x = bounds.size.x;
+            size.z = bounds.size.z;
+            ground.size = size;
+        }
 
         private void Awake()
         {
+            if (!collisionBaked) ConfigureCollisionGeometry();
+        }
+
+        // The Editor persists the returned mesh as an asset before saving the scene.
+        public Mesh BakeCollisionGeometry(BoxCollider ground)
+        {
+            if (Application.isPlaying)
+                throw new System.InvalidOperationException("Bake field collision in Edit mode.");
+            if (collisionBaked)
+            {
+                var collider = GetComponent<MeshCollider>();
+                return collider != null ? collider.sharedMesh : null;
+            }
+            ConfigureCollisionGeometry();
+            AlignGround(ground);
+            if (_collisionMesh == null && transform.Find(CompactBoxColliders.ContainerName) == null)
+                throw new System.InvalidOperationException("Field collision requires a source mesh.");
+            Mesh bakedMesh = _collisionMesh;
+            collisionBaked = true;
+            // Baked geometry belongs to the saved scene/assets, not runtime cleanup.
+            _originalMesh = null;
+            _collisionMesh = null;
+            _centralStep = null;
+            return bakedMesh;
+        }
+
+        private void ConfigureCollisionGeometry()
+        {
             _collider = GetComponent<MeshCollider>();
-            _originalMesh = _collider.sharedMesh;
+            _originalMesh = GetComponent<MeshFilter>().sharedMesh;
+            if (_originalMesh == null && _collider != null) _originalMesh = _collider.sharedMesh;
             if (_originalMesh == null) return;
             Vector3[] vertices = _originalMesh.vertices;
             FloorHeight = _originalMesh.bounds.min.y + 0.001f;
+            if (CompactBoxColliders.TryBuild(gameObject, _originalMesh))
+            {
+                if (_collider != null) _collider.enabled = false;
+                return;
+            }
+            if (_collider == null) _collider = gameObject.AddComponent<MeshCollider>();
             int[] originalTriangles = _originalMesh.triangles;
             bool reverseWinding = HasInwardTopFaces(vertices, originalTriangles, _originalMesh.bounds.max.y);
             bool hasCentralStep = TryGetCentralStepBounds(vertices, originalTriangles, _originalMesh.bounds,
@@ -101,7 +185,9 @@ namespace RobotSim.Environment
 
         public void AlignGround(BoxCollider ground)
         {
-            if (_originalMesh == null || ground == null) return;
+            var mesh = _originalMesh != null ? _originalMesh : GetComponent<MeshFilter>().sharedMesh;
+            if (mesh == null || ground == null) return;
+            FloorHeight = mesh.bounds.min.y + 0.001f;
             Vector3 worldFloor = transform.TransformPoint(new Vector3(0, FloorHeight, 0));
             Vector3 localFloor = ground.transform.InverseTransformPoint(worldFloor);
             Vector3 center = ground.center;

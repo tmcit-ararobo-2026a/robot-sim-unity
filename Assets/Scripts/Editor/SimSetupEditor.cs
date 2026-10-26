@@ -227,6 +227,7 @@ namespace RobotSim.Editor
             // Save Scene
             string scenePath = "Assets/Scenes/NHK2026_SimScene.unity";
             EditorSceneManager.SaveScene(scene, scenePath);
+            ScenePhysicsBaker.BakeAndSave(scene);
             Debug.Log("[SimSetupEditor] Exact Isaac Sim (main.usd) scene built, aligned to nhk2026_map.json, and saved!");
         }
     }

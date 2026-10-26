@@ -53,6 +53,7 @@ namespace RobotSim.Environment
         [SerializeField, Min(0.01f)] private float bucketMass = 0.6f;
         [SerializeField, Min(0.01f)] private float platformMass = 3f;
         [SerializeField, Min(0.01f)] private float flagMass = 10f;
+        [SerializeField, HideInInspector] private bool physicsBaked;
 
         private static byte[] _cachedBinData;
         private static IsaacSceneMeta _cachedMeta;
@@ -161,17 +162,11 @@ namespace RobotSim.Environment
                 return;
             }
 
+            physicsBaked = false;
             while (transform.childCount > 0)
             {
                 DestroyImmediate(transform.GetChild(0).gameObject);
             }
-
-            // Safety static ground collider at y = 0 matching Isaac Sim's groundPlane
-            GameObject groundColliderObj = new GameObject("GroundPlaneCollider");
-            groundColliderObj.transform.SetParent(transform, false);
-            groundColliderObj.transform.localPosition = new Vector3(0f, -0.05f, 0f);
-            BoxCollider groundBox = groundColliderObj.AddComponent<BoxCollider>();
-            groundBox.size = new Vector3(30f, 0.1f, 30f);
 
             int fieldCount = 0;
             foreach (IsaacMeshEntry entry in meta.meshes)
@@ -193,6 +188,9 @@ namespace RobotSim.Environment
                 MeshCollider mc = obj.AddComponent<MeshCollider>();
                 mc.sharedMesh = mesh;
 
+                if (entry.name == "field_base")
+                    obj.AddComponent<FieldGroundPhysics>().EnsureFloorCollider();
+
                 fieldCount++;
             }
 
@@ -202,13 +200,37 @@ namespace RobotSim.Environment
 
         private void ConfigureRuntimePhysics()
         {
+            // Saved scenes already contain their final bodies and collision geometry.
+            if (!physicsBaked) ConfigurePhysics(false);
+        }
+
+        public Mesh BakePhysics()
+        {
+            if (Application.isPlaying)
+                throw new InvalidOperationException("Bake field physics in Edit mode.");
+            Mesh collisionMesh = ConfigurePhysics(true);
+            physicsBaked = true;
+            return collisionMesh;
+        }
+
+        private Mesh ConfigurePhysics(bool bake)
+        {
+            Mesh collisionMesh = null;
             var fieldBase = transform.Find("field_base");
             var ground = transform.Find("GroundPlaneCollider");
-            if (fieldBase != null && ground != null)
+            if (fieldBase != null)
             {
                 var physics = fieldBase.GetComponent<FieldGroundPhysics>();
                 if (physics == null) physics = fieldBase.gameObject.AddComponent<FieldGroundPhysics>();
-                physics.AlignGround(ground.GetComponent<BoxCollider>());
+                var floor = physics.EnsureFloorCollider(ground != null ? ground.GetComponent<BoxCollider>() : null);
+                physics.FitFloorToField();
+                if (ground != null)
+                {
+                    if (Application.isPlaying) Destroy(ground.gameObject);
+                    else DestroyImmediate(ground.gameObject);
+                }
+                if (bake) collisionMesh = physics.BakeCollisionGeometry(floor);
+                else physics.AlignGround(floor);
             }
             foreach (Transform child in transform)
             {
@@ -216,11 +238,12 @@ namespace RobotSim.Environment
                     FieldPropPhysics.ConfigureStaticPlatform(child.gameObject);
             }
             ConfigureLooseProps();
+            return collisionMesh;
         }
 
         public void ConfigureLooseProps()
         {
-            if (!Application.isPlaying || !simulateLooseProps) return;
+            if (!simulateLooseProps) return;
             // Snapshot first: wrapping a mesh changes the field's direct children.
             var props = new System.Collections.Generic.List<GameObject>();
             foreach (Transform child in transform) props.Add(child.gameObject);
