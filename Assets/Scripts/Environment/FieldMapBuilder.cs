@@ -136,14 +136,8 @@ namespace RobotSim.Environment
                 int[] indices = new int[idxCount];
                 Buffer.BlockCopy(binData, sub.indexByteOffset, indices, 0, idxCount * 4);
 
-                // Flip triangle winding order because USD (right-handed) -> Unity (left-handed) has det = -1
-                for (int t = 0; t + 2 < idxCount; t += 3)
-                {
-                    int tmp = indices[t + 1];
-                    indices[t + 1] = indices[t + 2];
-                    indices[t + 2] = tmp;
-                }
-
+                // The binary already contains Unity-space vertices and outward-facing
+                // triangle indices. Flipping them again makes the visible surfaces face inward.
                 mesh.SetTriangles(indices, s, false);
                 materials[s] = CreateIsaacMaterial(sub.material, isField);
             }
