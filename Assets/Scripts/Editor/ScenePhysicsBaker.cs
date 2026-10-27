@@ -5,6 +5,7 @@ using UnityEngine;
 using UnityEngine.SceneManagement;
 using RobotSim.Control;
 using RobotSim.Environment;
+using RobotSim.Opponent;
 
 namespace RobotSim.Editor
 {
@@ -21,6 +22,7 @@ namespace RobotSim.Editor
                 throw new InvalidOperationException("Save the scene before baking its physics.");
 
             string folder = "Assets/Generated/Physics/" + System.IO.Path.GetFileNameWithoutExtension(scene.path);
+            CompetitionPhysicsSetup.EnsureMaterials();
             EnsureFolder(folder);
             foreach (var root in scene.GetRootGameObjects())
             {
@@ -37,6 +39,8 @@ namespace RobotSim.Editor
                     var ground = builder.GetComponentInChildren<FieldGroundPhysics>(true);
                     if (ground != null) EditorUtility.SetDirty(ground);
                 }
+                foreach (var opponent in root.GetComponentsInChildren<OpponentRobotController>(true))
+                    CompetitionPhysics.ApplyOpponent(opponent.transform);
                 foreach (var drive in root.GetComponentsInChildren<KinematicOmniDrive>(true))
                 {
                     drive.ConfigureBodyPhysics();

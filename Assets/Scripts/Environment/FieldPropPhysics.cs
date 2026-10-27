@@ -23,7 +23,11 @@ namespace RobotSim.Environment
         public static Rigidbody MakeMovable(GameObject geometry, float mass)
         {
             var existing = geometry.GetComponent<Rigidbody>();
-            if (existing != null) return existing;
+            if (existing != null)
+            {
+                existing.mass = mass;
+                return existing;
+            }
             var filter = geometry.GetComponent<MeshFilter>();
             if (filter == null || filter.sharedMesh == null) return null;
             Mesh mesh = filter.sharedMesh;

@@ -46,11 +46,14 @@ namespace RobotSim.Environment
     [ExecuteInEditMode]
     public class FieldMapBuilder : MonoBehaviour
     {
-        [Header("Movable Field Props (estimated masses, kg)")]
+        [Header("Movable Field Props (kg; desk/chair/platform/flag are estimates)")]
         [SerializeField] private bool simulateLooseProps = true;
         [SerializeField, Min(0.01f)] private float deskMass = 8f;
         [SerializeField, Min(0.01f)] private float chairMass = 5f;
-        [SerializeField, Min(0.01f)] private float bucketMass = 0.6f;
+        [Tooltip("Rulebook 5.3: approximately 978 g, including handle, excluding ballast.")]
+        [SerializeField, Min(0.01f)] private float bucketMass = CompetitionPhysics.BucketShellMass;
+        [Tooltip("Unknown in the supplied documents. Zero means ballast is not yet modeled; enter measured added mass.")]
+        [SerializeField, Min(0f)] private float fixedBucketBallastMass;
         [SerializeField, Min(0.01f)] private float platformMass = 3f;
         [SerializeField, Min(0.01f)] private float flagMass = 10f;
         [SerializeField, HideInInspector] private bool physicsBaked;
@@ -196,6 +199,7 @@ namespace RobotSim.Environment
         {
             // Saved scenes already contain their final bodies and collision geometry.
             if (!physicsBaked) ConfigurePhysics(false);
+            else CompetitionPhysics.ApplyField(transform);
         }
 
         public Mesh BakePhysics()
@@ -232,6 +236,7 @@ namespace RobotSim.Environment
                     FieldPropPhysics.ConfigureStaticPlatform(child.gameObject);
             }
             ConfigureLooseProps();
+            CompetitionPhysics.ApplyField(transform);
             return collisionMesh;
         }
 
@@ -244,7 +249,11 @@ namespace RobotSim.Environment
             foreach (var prop in props)
             {
                 if (FieldPropPhysics.TryGetMass(prop.name, deskMass, chairMass, bucketMass, flagMass, platformMass, out float mass))
+                {
+                    if (prop.name.StartsWith("bucket", StringComparison.Ordinal) && !prop.name.Contains("platform"))
+                        mass += fixedBucketBallastMass;
                     FieldPropPhysics.MakeMovable(prop, mass);
+                }
             }
         }
 

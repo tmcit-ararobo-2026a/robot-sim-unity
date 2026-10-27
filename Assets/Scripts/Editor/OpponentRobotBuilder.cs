@@ -126,6 +126,9 @@ namespace RobotSim.Editor
             // 6. ツインアルミ支柱 & 移動バケツ (PO-24A実寸CADメッシュ, 上面高さ1.80m, 中空コライダー構造) - ルール3.2.3 / 5.3準拠
             BuildMovingBucketAssembly(robot.transform, side, meta, binData, aluMat, redBtnMat, bucketPolyMat);
 
+            CompetitionPhysicsSetup.EnsureMaterials();
+            CompetitionPhysics.ApplyOpponent(robot.transform);
+
             Selection.activeGameObject = robot;
             EditorUtility.SetDirty(robot);
             Debug.Log($"<color=cyan>[OpponentRobotBuilder]</color> 2026公式ルール完全準拠・相手ロボット ({side}) を生成しました! (リロード待機時間: 10秒)");

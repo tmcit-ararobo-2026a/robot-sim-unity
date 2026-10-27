@@ -146,6 +146,7 @@ namespace RobotSim.Opponent
 
         private void Awake()
         {
+            RobotSim.Environment.CompetitionPhysics.ApplyOpponent(transform);
             _rb = GetComponent<Rigidbody>();
             _rb.useGravity = false;
             _rb.isKinematic = true;
