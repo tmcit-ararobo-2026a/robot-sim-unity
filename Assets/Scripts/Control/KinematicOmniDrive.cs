@@ -73,9 +73,12 @@ namespace RobotSim.Control
         private float _targetAngularZ;
         private double _lastRosCmdSec = -10;
         private bool _manualKeyActive;
-        private Vector3 _manualLocalVelocity;
+        private bool _manualTranslationActive;
+        private Quaternion _manualMovementRotation;
+        private Vector3 _manualWorldVelocity;
         private float _manualAngularZ;
         private Vector3 _rampedLocalVelocity;
+        private Vector3 _rampedWorldVelocity;
         private float _rampedAngularZ;
         private readonly HashSet<Collider> _groundContacts = new HashSet<Collider>();
         public bool IsGrounded => _groundContacts.Count > 0;
@@ -95,6 +98,8 @@ namespace RobotSim.Control
             Application.runInBackground = true;
             _rb = GetComponent<Rigidbody>();
             if (!bodyPhysicsBaked) ConfigureBodyPhysics();
+            AlignYawCenter();
+            AlignChassisInertia();
             _rb.maxAngularVelocity = Mathf.Max(_rb.maxAngularVelocity, maxAngularSpeed);
 
             // A default box's static/patch friction locks strafing and yaw. Approximate
@@ -127,7 +132,47 @@ namespace RobotSim.Control
             _rb.interpolation = RigidbodyInterpolation.Interpolate;
             _rb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
             _rb.maxAngularVelocity = Mathf.Max(_rb.maxAngularVelocity, maxAngularSpeed);
+            AlignYawCenter();
+            AlignChassisInertia();
             bodyPhysicsBaked = !Application.isPlaying;
+        }
+
+        private void AlignChassisInertia()
+        {
+            // PhysX angular locks use the inertia frame. The asymmetric CAD
+            // compound tilts its principal axes, allowing slow roll/pitch drift
+            // even with X/Z frozen. Preserve the moments about each chassis axis
+            // and omit cross terms for this roll/pitch-locked approximation.
+            // Unlock temporarily: the getter reports zero (infinite inertia) for
+            // frozen axes, which would otherwise erase the yaw moment on boxes
+            // whose automatically chosen principal axes are permuted.
+            var constraints = _rb.constraints;
+            _rb.constraints = RigidbodyConstraints.None;
+            _rb.ResetInertiaTensor();
+            Vector3 moments = _rb.inertiaTensor;
+            Quaternion toPrincipal = Quaternion.Inverse(_rb.inertiaTensorRotation);
+            Vector3 x = toPrincipal * Vector3.right;
+            Vector3 y = toPrincipal * Vector3.up;
+            Vector3 z = toPrincipal * Vector3.forward;
+            _rb.inertiaTensorRotation = Quaternion.identity;
+            _rb.inertiaTensor = new Vector3(
+                Vector3.Dot(x, Vector3.Scale(moments, x)),
+                Vector3.Dot(y, Vector3.Scale(moments, y)),
+                Vector3.Dot(z, Vector3.Scale(moments, z)));
+            _rb.constraints = constraints;
+        }
+
+        private void AlignYawCenter()
+        {
+            // Imported asymmetric CAD colliders put the automatic COM off the
+            // base_link axis. Rigidbody velocity belongs to that COM, so applying
+            // yaw otherwise makes the commanded base_link origin orbit around it.
+            // Roll/pitch are locked: retain the computed height and align only the
+            // horizontal mass center with the robot's commanded rotation axis.
+            Vector3 center = _rb.centerOfMass;
+            center.x = 0f;
+            center.z = 0f;
+            _rb.centerOfMass = center;
         }
 
         private void OnDestroy()
@@ -140,6 +185,11 @@ namespace RobotSim.Control
         private void OnEnable()
         {
             _groundContacts.Clear();
+            _manualKeyActive = false;
+            _manualTranslationActive = false;
+            _manualMovementRotation = _rb.rotation;
+            _manualWorldVelocity = Vector3.zero;
+            _manualAngularZ = 0f;
             _previousVelocityWorld = _rb.linearVelocity;
             _accelerationWorld = Vector3.zero;
             ResetCommandRampToBody();
@@ -193,15 +243,26 @@ namespace RobotSim.Control
             bool turnLeft = Input.GetKey(KeyCode.Q);
             bool turnRight = Input.GetKey(KeyCode.E);
             bool active = forward || backward || left || right || turnLeft || turnRight;
+            Vector3 direction = new Vector3((right ? 1f : 0f) - (left ? 1f : 0f), 0f,
+                (forward ? 1f : 0f) - (backward ? 1f : 0f));
+            UpdateManualCommand(direction, (turnLeft ? 1f : 0f) - (turnRight ? 1f : 0f), active);
+        }
+
+        private void UpdateManualCommand(Vector3 direction, float turn, bool active)
+        {
             if (_manualKeyActive && !active)
             {
                 // Releasing manual control brakes; do not revive an earlier ROS command.
                 lock (_commandLock) _lastRosCmdSec = -10;
             }
             _manualKeyActive = active;
-            _manualLocalVelocity = new Vector3((right ? 1f : 0f) - (left ? 1f : 0f), 0f,
-                (forward ? 1f : 0f) - (backward ? 1f : 0f)).normalized * maxLinearSpeed;
-            _manualAngularZ = ((turnLeft ? 1f : 0f) - (turnRight ? 1f : 0f)) * maxAngularSpeed;
+            bool translating = direction.sqrMagnitude > 1e-4f;
+            // Keep the keyboard's movement axes fixed for this continuous move.
+            // Turning changes the body heading without bending the chosen path.
+            if (translating && !_manualTranslationActive) _manualMovementRotation = _rb.rotation;
+            _manualTranslationActive = translating;
+            _manualWorldVelocity = _manualMovementRotation * direction.normalized * maxLinearSpeed;
+            _manualAngularZ = turn * maxAngularSpeed;
         }
 
         private void FixedUpdate()
@@ -222,7 +283,6 @@ namespace RobotSim.Control
             }
             if (_manualKeyActive)
             {
-                localVelocity = _manualLocalVelocity;
                 angularZ = _manualAngularZ;
             }
 
@@ -232,14 +292,28 @@ namespace RobotSim.Control
                 ResetCommandRampToBody();
                 return;
             }
-            float linearRate = localVelocity.sqrMagnitude < 1e-4f ? brakingAcceleration : linearAcceleration;
+            bool stopping = _manualKeyActive
+                ? _manualWorldVelocity.sqrMagnitude < 1e-4f : localVelocity.sqrMagnitude < 1e-4f;
+            float linearRate = stopping ? brakingAcceleration : linearAcceleration;
             bool slowingYaw = Mathf.Abs(angularZ) < Mathf.Abs(_rampedAngularZ) || angularZ * _rampedAngularZ < 0f;
             float angularRate = slowingYaw || Mathf.Abs(angularZ) < 1e-4f
                 ? angularBrakingAcceleration : angularAcceleration;
-            _rampedLocalVelocity = Vector3.MoveTowards(_rampedLocalVelocity, localVelocity, linearRate * dt);
+            if (_manualKeyActive || stopping)
+            {
+                // Ramp and brake keyboard motion in the world frame, including
+                // the coast after key release. Keep ROS ramps in the body frame.
+                Vector3 targetWorld = _manualKeyActive ? _manualWorldVelocity : Vector3.zero;
+                _rampedWorldVelocity = Vector3.MoveTowards(_rampedWorldVelocity, targetWorld, linearRate * dt);
+                _rampedLocalVelocity = Quaternion.Inverse(_rb.rotation) * _rampedWorldVelocity;
+            }
+            else
+            {
+                _rampedLocalVelocity = Vector3.MoveTowards(_rampedLocalVelocity, localVelocity, linearRate * dt);
+                _rampedWorldVelocity = _rb.rotation * _rampedLocalVelocity;
+            }
             _rampedAngularZ = Mathf.MoveTowards(_rampedAngularZ, angularZ, angularRate * dt);
 
-            Vector3 desiredWorld = _rb.rotation * _rampedLocalVelocity;
+            Vector3 desiredWorld = _rampedWorldVelocity;
             Vector3 planarVelocity = new Vector3(velocity.x, 0f, velocity.z);
             Vector3 driveAcceleration = Vector3.ClampMagnitude((desiredWorld - planarVelocity) / dt, maxDriveAcceleration);
             _rb.AddForce(driveAcceleration * _rb.mass, ForceMode.Force);
@@ -254,6 +328,7 @@ namespace RobotSim.Control
         {
             _rampedLocalVelocity = Quaternion.Inverse(_rb.rotation) * _rb.linearVelocity;
             _rampedLocalVelocity.y = 0f;
+            _rampedWorldVelocity = _rb.rotation * _rampedLocalVelocity;
             _rampedAngularZ = -_rb.angularVelocity.y;
         }
 
