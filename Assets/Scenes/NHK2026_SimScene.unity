@@ -22470,8 +22470,10 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   frameId: livox_frame
+  pointCloudPublishRateHz: 10
+  imuPublishRateHz: 200
   useGpu: 1
-  depthResolution: 512
+  depthResolution: 1024
   baseFrame: {fileID: 0}
   sensorPositionRos: {x: 0.24, y: -0.25, z: 1.09}
 --- !u!1 &1345081134

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -25,17 +26,34 @@ namespace RobotSim.Sensors
         private ComputeShader _compute;
         private readonly RenderTexture[] _faces = new RenderTexture[6];
         private readonly Matrix4x4[] _viewProjections = new Matrix4x4[6];
-        private ComputeBuffer _directions;
-        private ComputeBuffer _ranges;
-        private AsyncGPUReadbackRequest _readback;
-        private int _capacity;
+        private sealed class ReadbackSlot
+        {
+            public ComputeBuffer Directions;
+            public ComputeBuffer Ranges;
+            public int Capacity;
+            public AsyncGPUReadbackRequest Request;
+            public bool Busy;
+            public bool Finished;
+            public Vector2[] Result;
+            public Action<Vector2[]> Completed;
+        }
+
+        // Readback latency must not serialize acquisition into one scan every
+        // two or three render frames. Each in-flight scan owns its GPU buffers.
+        public const int MaxPendingReadbacks = 3;
+        private readonly ReadbackSlot[] _slots = { new ReadbackSlot(), new ReadbackSlot(), new ReadbackSlot() };
+        private readonly Queue<ReadbackSlot> _pending = new Queue<ReadbackSlot>();
         private int _kernel;
         private bool _disposed;
         private bool _warned;
+        private int _captureFrame = -1;
+        private Vector3 _captureOrigin;
+        private float _captureMaxRange;
+        private int _captureLayerMask;
         private RaycastHit[] _cpuHits = new RaycastHit[32];
 
         public bool UsingGpu { get; private set; }
-        public bool IsBusy { get; private set; }
+        public bool IsBusy => !_disposed && (_pending.Count >= MaxPendingReadbacks || (!UsingGpu && _pending.Count > 0));
         public int Resolution { get; }
 
         public Mid360SceneSampler(bool preferGpu, int resolution)
@@ -103,11 +121,18 @@ namespace RobotSim.Sensors
                 return true;
             }
 
+            ReadbackSlot slot = null;
+            foreach (var candidate in _slots)
+                if (!candidate.Busy) { slot = candidate; break; }
+            if (slot == null) return false;
+
             try
             {
-                EnsureBuffers(directions.Length);
-                _directions.SetData(directions);
+                EnsureBuffers(slot, directions.Length);
+                slot.Directions.SetData(directions);
                 CaptureDepth(origin, maxRange, layerMask);
+                _compute.SetBuffer(_kernel, "_Directions", slot.Directions);
+                _compute.SetBuffer(_kernel, "_Ranges", slot.Ranges);
                 _compute.SetMatrixArray("_ViewProjections", _viewProjections);
                 _compute.SetVector("_Origin", origin);
                 _compute.SetInt("_Count", directions.Length);
@@ -115,11 +140,16 @@ namespace RobotSim.Sensors
                 _compute.SetFloat("_MinRange", minRange);
                 _compute.SetFloat("_MaxRange", maxRange);
                 _compute.Dispatch(_kernel, (directions.Length + 63) / 64, 1, 1);
-                IsBusy = true;
+                slot.Busy = true;
+                slot.Finished = false;
+                slot.Completed = completed;
+                _pending.Enqueue(slot);
                 int count = directions.Length;
-                _readback = AsyncGPUReadback.Request(_ranges, count * sizeof(float) * 2, 0, request =>
+                slot.Request = AsyncGPUReadback.Request(slot.Ranges, count * sizeof(float) * 2, 0, request =>
                 {
-                    IsBusy = false;
+                    // Readback callbacks may arrive in a different order. Release
+                    // buffers/deliver results only through the ordered queue below.
+                    slot.Finished = true;
                     if (_disposed) return;
                     if (request.hasError)
                     {
@@ -127,22 +157,42 @@ namespace RobotSim.Sensors
                         WarnFallback("GPU readback failed");
                         return;
                     }
-                    completed(request.GetData<Vector2>().ToArray());
+                    slot.Result = request.GetData<Vector2>().ToArray();
                 });
                 return true;
             }
             catch (Exception ex)
             {
-                IsBusy = false;
                 UsingGpu = false;
                 WarnFallback(ex.Message);
-                completed(ScanPhysics(origin, directions, minRange, maxRange, layerMask));
+                var result = ScanPhysics(origin, directions, minRange, maxRange, layerMask);
+                if (!slot.Busy && _pending.Count == 0)
+                {
+                    completed(result);
+                }
+                else
+                {
+                    if (!slot.Busy)
+                    {
+                        slot.Busy = true;
+                        _pending.Enqueue(slot);
+                    }
+                    slot.Completed = completed;
+                    slot.Result = result;
+                    slot.Finished = true;
+                }
                 return true;
             }
         }
 
         private void CaptureDepth(Vector3 origin, float maxRange, int layerMask)
         {
+            // Catch-up scans use different Livox pattern segments, but observe
+            // the same instantaneous scene/pose within this LateUpdate. Reuse
+            // only their depth views, never another scan's measured ray results.
+            if (Application.isPlaying && _captureFrame == Time.frameCount &&
+                _captureOrigin.Equals(origin) && _captureMaxRange == maxRange && _captureLayerMask == layerMask)
+                return;
             RenderTexture previousTarget = RenderTexture.active;
             try
             {
@@ -156,6 +206,13 @@ namespace RobotSim.Sensors
                     _viewProjections[face] = GL.GetGPUProjectionMatrix(_camera.projectionMatrix, true) * _camera.worldToCameraMatrix;
                     _camera.RenderWithShader(_depthShader, "");
                 }
+                if (Application.isPlaying)
+                {
+                    _captureFrame = Time.frameCount;
+                    _captureOrigin = origin;
+                    _captureMaxRange = maxRange;
+                    _captureLayerMask = layerMask;
+                }
             }
             finally
             {
@@ -164,16 +221,14 @@ namespace RobotSim.Sensors
             }
         }
 
-        private void EnsureBuffers(int count)
+        private static void EnsureBuffers(ReadbackSlot slot, int count)
         {
-            if (_capacity >= count) return;
-            _directions?.Release();
-            _ranges?.Release();
-            _capacity = Mathf.NextPowerOfTwo(count);
-            _directions = new ComputeBuffer(_capacity, sizeof(float) * 3);
-            _ranges = new ComputeBuffer(_capacity, sizeof(float) * 2);
-            _compute.SetBuffer(_kernel, "_Directions", _directions);
-            _compute.SetBuffer(_kernel, "_Ranges", _ranges);
+            if (slot.Capacity >= count) return;
+            slot.Directions?.Release();
+            slot.Ranges?.Release();
+            slot.Capacity = Mathf.NextPowerOfTwo(count);
+            slot.Directions = new ComputeBuffer(slot.Capacity, sizeof(float) * 3);
+            slot.Ranges = new ComputeBuffer(slot.Capacity, sizeof(float) * 2);
         }
 
         private Vector2[] ScanPhysics(Vector3 origin, Vector3[] directions, float minRange, float maxRange,
@@ -213,10 +268,40 @@ namespace RobotSim.Sensors
             Debug.LogWarning("[LivoxMid360Sim] " + reason + "; using CPU physics (Collider required).");
         }
 
+        /// <summary>
+        /// Refresh completion without waiting. Unity's automatic readback pump can
+        /// run before the previous frame's GPU work completes, leaving IsBusy set
+        /// for an extra frame even though that work is ready by LateUpdate.
+        /// Call this on the main thread before deciding whether to start a scan.
+        /// </summary>
+        public void PollReadback()
+        {
+            if (_disposed) return;
+            foreach (var slot in _slots)
+                if (slot.Busy && !slot.Finished) slot.Request.Update();
+            DeliverCompleted();
+        }
+
+        private void DeliverCompleted()
+        {
+            while (_pending.Count > 0 && _pending.Peek().Finished)
+            {
+                var slot = _pending.Dequeue();
+                var completed = slot.Completed;
+                var result = slot.Result;
+                slot.Busy = false;
+                slot.Completed = null;
+                slot.Result = null;
+                if (!_disposed && result != null) completed(result);
+            }
+        }
+
         /// <summary>Blocking diagnostics/shutdown only. Runtime capture never waits on the GPU.</summary>
         public void WaitForPendingScan()
         {
-            if (IsBusy) _readback.WaitForCompletion();
+            foreach (var slot in _slots)
+                if (slot.Busy && !slot.Finished) slot.Request.WaitForCompletion();
+            DeliverCompleted();
         }
 
         public void Dispose()
@@ -224,17 +309,23 @@ namespace RobotSim.Sensors
             if (_disposed) return;
             _disposed = true;
             WaitForPendingScan();
-            IsBusy = false;
             ReleaseGpu();
         }
 
         private void ReleaseGpu()
         {
             UsingGpu = false;
-            _directions?.Release();
-            _directions = null;
-            _ranges?.Release();
-            _ranges = null;
+            foreach (var slot in _slots)
+            {
+                slot.Directions?.Release();
+                slot.Directions = null;
+                slot.Ranges?.Release();
+                slot.Ranges = null;
+                slot.Busy = false;
+                slot.Result = null;
+                slot.Completed = null;
+            }
+            _pending.Clear();
             foreach (var face in _faces)
             {
                 if (face == null) continue;

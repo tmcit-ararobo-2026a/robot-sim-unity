@@ -6,20 +6,29 @@ using ROS2;
 using RobotSim.Control;
 using RobotSim.Shooter;
 using Debug = UnityEngine.Debug;
+using Stopwatch = System.Diagnostics.Stopwatch;
 
 namespace RobotSim.Sensors
 {
     public class LivoxMid360Sim : MonoBehaviour
     {
-        // Fixed MID-360S acquisition specifications; old scene values for the former
-        // 0.2 m / 40 m limits cannot silently override these device limits.
+        // Device range/point rate and default publication settings. The frame and
+        // IMU publication rates can be overridden independently in the Inspector.
         public const float MinRange = 0.1f;
         public const float MaxRange = 100f;
         public const int PointRate = 200000;
         public const int PointsPerScan = 20000;
         public const double ScanPeriod = 0.1;
         public const double ImuPeriod = 0.005;
+        public const float MaxPointCloudPublishRateHz = 100f;
+        public const float MaxImuPublishRateHz = 500f;
         [SerializeField] private string frameId = "livox_frame";
+
+        [Header("Publishing Rates")]
+        [Tooltip("PointCloud2 messages per simulation second (0.1–100 Hz). The 200,000 raw samples/s budget is divided between messages; scene poses update at the capture/render rate.")]
+        [SerializeField, Range(0.1f, MaxPointCloudPublishRateHz)] private float pointCloudPublishRateHz = 10f;
+        [Tooltip("IMU messages per simulation second (0.1–500 Hz). Changes also apply during Play mode. Uses 100 ms of simulation-time delivery buffering to smooth physics-frame batches; measurement timestamps are preserved.")]
+        [SerializeField, Range(0.1f, MaxImuPublishRateHz)] private float imuPublishRateHz = 200f;
 
         [Header("Scene Capture")]
         [SerializeField] private bool useGpu = true;
@@ -34,6 +43,8 @@ namespace RobotSim.Sensors
         private sealed class ScanFrame
         {
             public Vector2[] Returns;
+            public int ReturnOffset;
+            public int PointCount;
             public int StartIndex;
             public double EndTime;
             public double Period;
@@ -44,11 +55,57 @@ namespace RobotSim.Sensors
         private readonly Queue<ScanFrame> _completedScans = new Queue<ScanFrame>();
         private Vector3[] _worldDirections;
         private double _nextScanTime;
+        private float _activePointCloudRateHz;
+        private double _fractionalScanPoints;
+        private int _nextScanPointCount;
+        private volatile float _requestedImuRateHz = 200f;
+        private volatile float _requestedTimeScale = 1f;
+        private long _lastCloudPaceTicks;
+        private double _cloudPacingTimeSec;
+        private double _nextCloudPublishTimeSec;
+        private readonly Queue<sensor_msgs.msg.Imu> _completedImus = new Queue<sensor_msgs.msg.Imu>();
+        private double _imuPacingTimeSec;
+        private bool _imuPaceInitialized;
+        // Physics delivers IMU samples in frame-sized batches. Buffer 100 ms
+        // before sending so a short render-frame variation does not empty the
+        // output queue and overflow a subscriber with the following catch-up burst.
+        private const double ImuDeliveryBufferSec = 0.1;
+        private float _activeImuRateHz = 200f;
         private bool _destroying;
 
         public bool UsingGpu => _sceneSampler != null && _sceneSampler.UsingGpu;
         public long PublishedScanCount { get; private set; }
         public int LastPublishedPointCount { get; private set; }
+        public float PointCloudPublishRateHz => NormalizePublishRate(pointCloudPublishRateHz, 10f, MaxPointCloudPublishRateHz);
+        public float ImuPublishRateHz => _requestedImuRateHz;
+
+        private static float NormalizePublishRate(float hz, float fallback, float maximum)
+        {
+            if (float.IsNaN(hz) || float.IsInfinity(hz)) return fallback;
+            return Mathf.Clamp(hz, 0.1f, maximum);
+        }
+
+        private void OnValidate()
+        {
+            pointCloudPublishRateHz = NormalizePublishRate(pointCloudPublishRateHz, 10f, MaxPointCloudPublishRateHz);
+            imuPublishRateHz = NormalizePublishRate(imuPublishRateHz, 200f, MaxImuPublishRateHz);
+            // The ROS executor reads only this managed value; never a Unity API.
+            _requestedImuRateHz = imuPublishRateHz;
+        }
+
+        public static int CalculateScanPointCount(float publishRateHz, ref double fractionalPoints)
+        {
+            double budget = PointRate / (double)NormalizePublishRate(publishRateHz, 10f, MaxPointCloudPublishRateHz) + fractionalPoints;
+            int count = (int)Math.Floor(budget + 1e-9);
+            fractionalPoints = Math.Max(0, budget - count);
+            return count;
+        }
+
+        private void ScheduleNextScan(double startTime, float hz)
+        {
+            _nextScanPointCount = CalculateScanPointCount(hz, ref _fractionalScanPoints);
+            _nextScanTime = startTime + (double)_nextScanPointCount / PointRate;
+        }
 
         public static double CurrentSimTimeSec
         {
@@ -92,9 +149,11 @@ namespace RobotSim.Sensors
 
         private void Awake()
         {
+            OnValidate();
             Application.runInBackground = true;
             Time.fixedDeltaTime = 0.01f;
-            Time.maximumDeltaTime = 0.10f;
+            // Honor the project's catch-up budget. A sensor-imposed 100 ms cap
+            // discarded physics time on slower render frames and lowered wall-time Hz.
             lock (TimeLock)
             {
                 _simTimeSec = 10.0;
@@ -131,6 +190,7 @@ namespace RobotSim.Sensors
             }
             _sceneSampler?.Dispose();
             lock (_scanLock) _completedScans.Clear();
+            _completedImus.Clear();
         }
 
         private void LoadPattern()
@@ -191,25 +251,52 @@ namespace RobotSim.Sensors
 
         private void Update()
         {
+            _requestedImuRateHz = NormalizePublishRate(imuPublishRateHz, 200f, MaxImuPublishRateHz);
+            _requestedTimeScale = Time.timeScale;
             if (_node == null) InitROS2();
         }
 
         // Run after drive/opponent/cloth Update so capture sees their displayed poses.
         private void LateUpdate()
         {
-            if (_sceneSampler == null || _sceneSampler.IsBusy || _cloudPub == null || _totalRays == 0) return;
+            if (_sceneSampler == null) return;
+            _sceneSampler.PollReadback();
+            if (_sceneSampler.IsBusy || _cloudPub == null || _totalRays == 0) return;
             double now = CurrentSimTimeSec;
-            if (now < _nextScanTime) return;
-            double period = ScanPeriod;
-            // Advance the deadline, rather than adding a period to this frame's
-            // late arrival; otherwise a 25 FPS editor turns 10 Hz into about 8 Hz.
-            if (_nextScanTime <= 0) _nextScanTime = now;
-            _nextScanTime += period;
-            if (_nextScanTime <= now) _nextScanTime = now + period;
-            int count = PointsPerScan;
-            if (_worldDirections == null || _worldDirections.Length != count) _worldDirections = new Vector3[count];
+            float hz = PointCloudPublishRateHz;
+            if (_nextScanTime <= 0 || hz != _activePointCloudRateHz)
+            {
+                _activePointCloudRateHz = hz;
+                _fractionalScanPoints = 0;
+                ScheduleNextScan(now, hz);
+            }
+            if (now + 1e-9 >= _nextScanTime) CaptureScheduledScans(now, hz);
+        }
+
+        private void CaptureScheduledScans(double now, float hz)
+        {
+            double endTime = _nextScanTime;
+            int nextCount = _nextScanPointCount;
+            double fractionalPoints = _fractionalScanPoints;
             int startIndex = _scanStartIndex;
-            _scanStartIndex = (_scanStartIndex + count) % _totalRays;
+            int count = 0;
+            var scans = new List<ScanFrame>();
+            // One render/readback contains every due window. A readback slot is
+            // an acquisition batch, not one ROS message: its latency must not
+            // impose a messages-per-render-frame ceiling at high publish rates.
+            while (now + 1e-9 >= endTime)
+            {
+                scans.Add(new ScanFrame
+                {
+                    ReturnOffset = count, PointCount = nextCount, StartIndex = startIndex,
+                    EndTime = endTime, Period = (double)nextCount / PointRate
+                });
+                count = checked(count + nextCount);
+                startIndex = (startIndex + nextCount) % _totalRays;
+                nextCount = CalculateScanPointCount(hz, ref fractionalPoints);
+                endTime += (double)nextCount / PointRate;
+            }
+            if (_worldDirections == null || _worldDirections.Length != count) _worldDirections = new Vector3[count];
 
             // Use the owning robot's actual Unity pose, matching the meshes captured
             // this frame, rather than racing the background kinematics state.
@@ -218,16 +305,27 @@ namespace RobotSim.Sensors
             Vector3 origin = baseTransform.position + rotation * new Vector3(-sensorPositionRos.y, sensorPositionRos.z, sensorPositionRos.x);
             for (int i = 0; i < count; i++)
             {
-                Vector3 d = _rayDirBaseRos[(startIndex + i) % _totalRays];
+                Vector3 d = _rayDirBaseRos[(_scanStartIndex + i) % _totalRays];
                 _worldDirections[i] = rotation * new Vector3(-d.y, d.z, d.x);
             }
-            _sceneSampler.TryScan(origin, _worldDirections, MinRange, MaxRange, ~0, returns =>
+            bool accepted = _sceneSampler.TryScan(origin, _worldDirections, MinRange, MaxRange, ~0, returns =>
             {
                 if (_destroying) return;
-                // Preserve every completed raw scan. Do not replace or downsample it.
+                // Share the immutable readback array. Partition by exact sample
+                // offsets, without copies, discarded returns or repeated clouds.
                 lock (_scanLock)
-                    _completedScans.Enqueue(new ScanFrame { Returns = returns, StartIndex = startIndex, EndTime = now, Period = period });
+                    foreach (var scan in scans)
+                    {
+                        scan.Returns = returns;
+                        _completedScans.Enqueue(scan);
+                    }
             });
+            // A rejected submission must leave its windows available for retry.
+            if (!accepted) return;
+            _nextScanTime = endTime;
+            _nextScanPointCount = nextCount;
+            _fractionalScanPoints = fractionalPoints;
+            _scanStartIndex = startIndex;
         }
 
         private void OnBackgroundTick()
@@ -236,38 +334,99 @@ namespace RobotSim.Sensors
 
             double currentSim = CurrentSimTimeSec;
             double delta = currentSim - _lastStepSimSec;
-            if (delta <= 0) return;
-            _lastStepSimSec = currentSim;
-
-            // Cloth uses the same elapsed simulation time, with stable substeps.
-            double remaining = delta;
-            while (remaining > 1e-8)
+            if (delta > 0)
             {
-                float step = (float)Math.Min(remaining, 0.01);
-                SimpleClothShooter.StepClothPhysics(step);
-                remaining -= step;
+                _lastStepSimSec = currentSim;
+
+                // Cloth uses the same elapsed simulation time, with stable substeps.
+                double remaining = delta;
+                while (remaining > 1e-8)
+                {
+                    float step = (float)Math.Min(remaining, 0.01);
+                    SimpleClothShooter.StepClothPhysics(step);
+                    remaining -= step;
+                }
+
+                _clockAccumSec += delta;
+                if (_clockAccumSec >= 0.01)
+                {
+                    _clockAccumSec %= 0.01;
+                    PublishClock(currentSim);
+                }
+
+                float imuHz = _requestedImuRateHz;
+                if (imuHz != _activeImuRateHz)
+                {
+                    _activeImuRateHz = imuHz;
+                    // Do not reinterpret an old, slow-rate remainder as past samples
+                    // when increasing the rate from the Inspector.
+                    _imuAccumSec = 0;
+                }
+                double imuPeriod = 1.0 / imuHz;
+                _imuAccumSec += delta;
+                while (_imuAccumSec + 1e-9 >= imuPeriod)
+                {
+                    _imuAccumSec = Math.Max(0, _imuAccumSec - imuPeriod);
+                    QueueImuSample(currentSim - _imuAccumSec);
+                }
             }
 
-            _clockAccumSec += delta;
-            if (_clockAccumSec >= 0.01)
-            {
-                _clockAccumSec %= 0.01;
-                PublishClock(currentSim);
-            }
-
-            _imuAccumSec += delta;
-            while (_imuAccumSec >= ImuPeriod)
-            {
-                _imuAccumSec -= ImuPeriod;
-                PublishImu(currentSim - _imuAccumSec);
-            }
-
-            ScanFrame scan;
+            // Readbacks deliver a batch of consecutive windows. Pace those raw
+            // messages on the executor's monotonic clock so render-frame bursts
+            // do not overrun subscribers' queues. Their ROS/sample stamps remain
+            // simulation time. The pacing clock follows timeScale and cannot run
+            // beyond physics time, including when the Editor is paused.
+            long ticks = Stopwatch.GetTimestamp();
+            double elapsed = _lastCloudPaceTicks > 0 ? (double)(ticks - _lastCloudPaceTicks) / Stopwatch.Frequency : 0;
+            _lastCloudPaceTicks = ticks;
+            float timeScale = _requestedTimeScale;
+            _cloudPacingTimeSec = Math.Min(currentSim, _cloudPacingTimeSec + elapsed * timeScale);
+            if (timeScale <= 0) return;
+            PublishReadyImus(currentSim, elapsed, timeScale);
+            int ready;
             lock (_scanLock)
             {
-                scan = _completedScans.Count > 0 ? _completedScans.Dequeue() : null;
+                ready = _completedScans.Count;
+                // A long physics/Editor pause exhausts the buffer and lets the
+                // pacing clock catch physics. Re-anchor on the next acquisition
+                // so resuming does not permanently turn paced output into bursts.
+                if (ready == 0 && _cloudPacingTimeSec + 1e-9 >= currentSim)
+                    _nextCloudPublishTimeSec = 0;
+                if (ready > 0 && _nextCloudPublishTimeSec <= 0)
+                    _nextCloudPublishTimeSec = _cloudPacingTimeSec = _completedScans.Peek().EndTime;
             }
-            if (scan != null) PublishPointCloud(scan);
+            for (int i = 0; i < ready; i++)
+            {
+                if (_cloudPacingTimeSec + 1e-9 < _nextCloudPublishTimeSec) break;
+                ScanFrame scan;
+                lock (_scanLock) scan = _completedScans.Dequeue();
+                PublishPointCloud(scan);
+                _nextCloudPublishTimeSec += scan.Period;
+            }
+        }
+
+        private void PublishReadyImus(double currentSim, double elapsed, float timeScale)
+        {
+            // Only the executor touches this queue. Build each measurement at
+            // its physics update; publication must not resample a newer pose.
+            if (!_imuPaceInitialized && _completedImus.Count > 0)
+            {
+                var stamp = _completedImus.Peek().Header.Stamp;
+                _imuPacingTimeSec = stamp.Sec + stamp.Nanosec * 1e-9 - ImuDeliveryBufferSec;
+                _imuPaceInitialized = true;
+            }
+            else
+                _imuPacingTimeSec = Math.Min(currentSim, _imuPacingTimeSec + elapsed * timeScale);
+
+            while (_completedImus.Count > 0)
+            {
+                var sample = _completedImus.Peek();
+                double sampleTime = sample.Header.Stamp.Sec + sample.Header.Stamp.Nanosec * 1e-9;
+                if (sampleTime > _imuPacingTimeSec + 1e-9) break;
+                _imuPub.Publish(_completedImus.Dequeue());
+            }
+            if (_completedImus.Count == 0 && _imuPacingTimeSec + 1e-9 >= currentSim)
+                _imuPaceInitialized = false;
         }
 
         private void PublishClock(double simTimeSec)
@@ -298,7 +457,7 @@ namespace RobotSim.Sensors
             );
         }
 
-        private void PublishImu(double simTimeSec)
+        private void QueueImuSample(double simTimeSec)
         {
             int sec = (int)simTimeSec;
             uint nanosec = (uint)((simTimeSec - sec) * 1e9);
@@ -333,13 +492,13 @@ namespace RobotSim.Sensors
             // The hardware outputs gyroscope/accelerometer measurements, not an attitude estimate.
             imu.Orientation_covariance[0] = -1;
 
-            _imuPub.Publish(imu);
+            _completedImus.Enqueue(imu);
         }
 
         private void PublishPointCloud(ScanFrame scan)
         {
             var cloud = BuildRawPointCloud(scan.Returns, _rayDirLivoxRos, scan.StartIndex,
-                scan.EndTime - scan.Period, frameId);
+                scan.EndTime - scan.Period, frameId, scan.ReturnOffset, scan.PointCount);
             _cloudPub.Publish(cloud);
             LastPublishedPointCount = (int)cloud.Width;
             PublishedScanCount++;
@@ -348,9 +507,11 @@ namespace RobotSim.Sensors
         // ROS adapter only: preserve sample count/order, self hits, floor hits and
         // missing returns. No segmentation, point selection or feature extraction.
         public static sensor_msgs.msg.PointCloud2 BuildRawPointCloud(Vector2[] returns, Vector3[] pattern,
-            int startIndex, double startSimTimeSec, string frame)
+            int startIndex, double startSimTimeSec, string frame, int returnOffset = 0, int count = -1)
         {
-            int count = returns.Length;
+            if (count < 0) count = returns.Length - returnOffset;
+            if (returnOffset < 0 || count < 0 || returnOffset > returns.Length - count)
+                throw new ArgumentOutOfRangeException(nameof(returnOffset));
             int headerSec = (int)startSimTimeSec;
             uint headerNanosec = (uint)((startSimTimeSec - headerSec) * 1e9);
             const int pointStep = 25;
@@ -358,12 +519,12 @@ namespace RobotSim.Sensors
             using var pointWriter = new BinaryWriter(new MemoryStream(pointData));
             for (int i = 0; i < count; i++)
             {
-                float dist = returns[i].x;
+                float dist = returns[returnOffset + i].x;
                 int rayIdx = (startIndex + i) % pattern.Length;
                 // The device outputs (0,0,0) on no return. Keep its sample and time;
                 // zero returns, floor hits and own-robot hits are never filtered out.
                 Vector3 ptLivox = dist > 0f ? pattern[rayIdx] * dist : Vector3.zero;
-                float intensity = dist > 0f ? returns[i].y : 0f;
+                float intensity = dist > 0f ? returns[returnOffset + i].y : 0f;
                 double stampNs = (startSimTimeSec + (double)i / PointRate) * 1e9;
                 pointWriter.Write(ptLivox.x);
                 pointWriter.Write(ptLivox.y);
