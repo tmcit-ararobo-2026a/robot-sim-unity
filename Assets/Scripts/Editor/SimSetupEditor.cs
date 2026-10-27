@@ -36,6 +36,10 @@ namespace RobotSim.Editor
         [MenuItem("RobotSim/Build Complete Simulation Scene")]
         public static void BuildScene()
         {
+            var clothPrefab = AssetDatabase.LoadAssetAtPath<GameObject>("Assets/Prefab/cloth.prefab");
+            if (clothPrefab == null)
+                throw new System.InvalidOperationException("Assets/Prefab/cloth.prefab is required to build the scene.");
+
             Scene scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
 
             // 1. Isaac Sim Environment Lighting (4 DistantLights from /Enviroment/DistantLight..03)
@@ -177,40 +181,10 @@ namespace RobotSim.Editor
                 ? new Vector3(meta.releasePointLocalPositionUnity[0], meta.releasePointLocalPositionUnity[1], meta.releasePointLocalPositionUnity[2])
                 : new Vector3(0.002119f, 1.127392f, 0.557788f);
             shooterObj.transform.localRotation = Quaternion.identity;
-            shooterObj.AddComponent<SimpleClothShooter>();
-
-            // 10. Cloth Pool (/World/cloth_pool: marker_06..09 on desk_replenish_blue)
-            if (meta != null && binData != null && meta.meshes != null)
-            {
-                foreach (var entry in meta.meshes)
-                {
-                    if (entry.category == "cloth")
-                    {
-                        Mesh clothMesh = FieldMapBuilder.BuildUnityMesh(entry, binData, out Material[] clothMats);
-                        GameObject poolObj = new GameObject("cloth_pool");
-
-                        Vector3[] clothPositionsRawUnity = new Vector3[]
-                        {
-                            new Vector3(-4.366516f, 0.219538f, -5.048936f),
-                            new Vector3(-4.102242f, 0.219538f, -5.048936f),
-                            new Vector3(-4.102242f, 0.219538f, -5.478488f),
-                            new Vector3(-3.664678f, 0.219538f, -5.478488f)
-                        };
-                        string[] clothNames = new string[] { "marker_06", "marker_07", "marker_08", "marker_09" };
-
-                        for (int c = 0; c < clothPositionsRawUnity.Length; c++)
-                        {
-                            GameObject mObj = new GameObject(clothNames[c]);
-                            mObj.transform.SetParent(poolObj.transform, false);
-                            mObj.transform.position = AlignPointToMap(clothPositionsRawUnity[c]);
-                            mObj.transform.rotation = SceneAlignRotation;
-                            mObj.AddComponent<MeshFilter>().sharedMesh = clothMesh;
-                            mObj.AddComponent<MeshRenderer>().sharedMaterials = clothMats;
-                        }
-                        break;
-                    }
-                }
-            }
+            var shooter = shooterObj.AddComponent<SimpleClothShooter>();
+            var shooterSettings = new SerializedObject(shooter);
+            shooterSettings.FindProperty("clothPrefab").objectReferenceValue = clothPrefab;
+            shooterSettings.ApplyModifiedPropertiesWithoutUndo();
 
             // Frame SceneView camera to show the robot and field clearly
             if (SceneView.lastActiveSceneView != null)

@@ -4,7 +4,6 @@ using System.IO;
 using UnityEngine;
 using ROS2;
 using RobotSim.Control;
-using RobotSim.Shooter;
 using Debug = UnityEngine.Debug;
 using Stopwatch = System.Diagnostics.Stopwatch;
 
@@ -337,15 +336,6 @@ namespace RobotSim.Sensors
             if (delta > 0)
             {
                 _lastStepSimSec = currentSim;
-
-                // Cloth uses the same elapsed simulation time, with stable substeps.
-                double remaining = delta;
-                while (remaining > 1e-8)
-                {
-                    float step = (float)Math.Min(remaining, 0.01);
-                    SimpleClothShooter.StepClothPhysics(step);
-                    remaining -= step;
-                }
 
                 _clockAccumSec += delta;
                 if (_clockAccumSec >= 0.01)
