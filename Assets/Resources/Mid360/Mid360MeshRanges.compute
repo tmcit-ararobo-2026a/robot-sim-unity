@@ -1,0 +1,111 @@
+#pragma kernel SampleMeshRanges
+#pragma target 5.0
+
+struct Node { float4 boundsMin; float4 boundsMax; float4 links; };
+struct Triangle { float4 a; float4 b; float4 c; float4 previousA; float4 previousB; float4 previousC; };
+struct Instance { float4 previousPosition; float4 position; float4 previousRotation; float4 rotation; float4 previousScale; float4 scale; };
+struct TimedRay { float4 origin; float4 direction; };
+StructuredBuffer<Node> _TopNodes;
+StructuredBuffer<Node> _MeshNodes;
+StructuredBuffer<Triangle> _Triangles;
+StructuredBuffer<Instance> _Instances;
+StructuredBuffer<TimedRay> _Rays;
+RWStructuredBuffer<float2> _Ranges;
+int _Count, _TopCount;
+float _MinRange, _MaxRange;
+
+bool BoxHit(Node node, float3 origin, float3 direction, float limit)
+{
+    float low = 0, high = limit;
+    bool hit = true;
+    [unroll] for (int axis = 0; axis < 3; axis++)
+    {
+        if (abs(direction[axis]) < 1e-20)
+        {
+            hit = hit && origin[axis] >= node.boundsMin[axis] && origin[axis] <= node.boundsMax[axis];
+        }
+        else
+        {
+            float a = (node.boundsMin[axis] - origin[axis]) / direction[axis];
+            float b = (node.boundsMax[axis] - origin[axis]) / direction[axis];
+            low = max(low, min(a, b)); high = min(high, max(a, b));
+            hit = hit && low <= high;
+        }
+    }
+    return hit;
+}
+float4 Slerp(float4 a, float4 b, float t)
+{
+    float cosine = dot(a, b);
+    if (cosine < 0) { b = -b; cosine = -cosine; }
+    float4 result = normalize(lerp(a, b, t));
+    if (cosine <= 0.9995)
+    {
+        float angle = acos(clamp(cosine, -1, 1));
+        result = (sin((1-t)*angle)*a + sin(t*angle)*b) / sin(angle);
+    }
+    return result;
+}
+float3 Rotate(float4 q, float3 v) { return v + 2 * cross(q.xyz, cross(q.xyz, v) + q.w * v); }
+bool TriangleHit(float3 origin, float3 direction, float3 a, float3 b, float3 c, float limit, out float distance)
+{
+    distance = 0;
+    float3 e1 = b-a, e2 = c-a, p = cross(direction, e2);
+    float det = dot(e1, p);
+    // Double-sided geometry, independent of visible winding.
+    float inv = abs(det) >= 1e-9 ? 1 / det : 0;
+    float3 delta = origin-a;
+    float u = dot(delta, p) * inv;
+    float3 q = cross(delta, e1);
+    float v = dot(direction, q) * inv;
+    distance = dot(e2, q) * inv;
+    return abs(det) >= 1e-9 && u >= 0 && u <= 1 && v >= 0 && u+v <= 1 && distance >= 0 && distance <= limit;
+}
+[numthreads(64,1,1)]
+void SampleMeshRanges(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= (uint)_Count) return;
+    TimedRay ray = _Rays[id.x];
+    float fraction = saturate(ray.origin.w);
+    float nearest = _MaxRange, reflectivity = 0;
+    bool found = false;
+    int n = 0;
+    while (n < _TopCount)
+    {
+        Node node = _TopNodes[n];
+        if (!BoxHit(node, ray.origin.xyz, ray.direction.xyz, nearest)) { n = (int)node.links.x; continue; }
+        if (node.boundsMax.w == 0) { n++; continue; }
+        Instance instance = _Instances[(int)node.boundsMin.w];
+        float3 position = lerp(instance.previousPosition.xyz, instance.position.xyz, fraction);
+        float4 inverse = Slerp(instance.previousRotation, instance.rotation, fraction);
+        inverse.xyz = -inverse.xyz;
+        float3 scale = lerp(instance.previousScale.xyz, instance.scale.xyz, fraction);
+        if (abs(scale.x*scale.y*scale.z) > 1e-12)
+        {
+            float3 origin = Rotate(inverse, ray.origin.xyz-position) / scale;
+            float3 direction = Rotate(inverse, ray.direction.xyz) / scale; // t remains world metres.
+            int m = (int)instance.position.w;
+            int end = (int)_MeshNodes[m].links.x;
+            while (m < end)
+            {
+                Node meshNode = _MeshNodes[m];
+                if (!BoxHit(meshNode, origin, direction, nearest)) { m = (int)meshNode.links.x; continue; }
+                if (meshNode.boundsMax.w == 0) { m++; continue; }
+                int first = (int)meshNode.boundsMin.w, count = (int)meshNode.boundsMax.w;
+                for (int t = first; t < first+count; t++)
+                {
+                    Triangle tri = _Triangles[t];
+                    float distance;
+                    if (TriangleHit(origin, direction, lerp(tri.previousA.xyz,tri.a.xyz,fraction),
+                        lerp(tri.previousB.xyz,tri.b.xyz,fraction), lerp(tri.previousC.xyz,tri.c.xyz,fraction), nearest, distance))
+                    {
+                        nearest = distance; reflectivity = instance.previousPosition.w; found = true;
+                    }
+                }
+                m = (int)meshNode.links.x;
+            }
+        }
+        n = (int)node.links.x;
+    }
+    _Ranges[id.x] = found && nearest >= _MinRange ? float2(nearest,reflectivity) : float2(-1,0);
+}

@@ -107,17 +107,36 @@ namespace RobotSim.Editor
             for (int i = 0; i < returns.Length; i++) returns[i] = new Vector2(1.09f, 75);
             returns[0] = new Vector2(0.15f, 123); // Own surface in the former 0.2 m blind zone.
             returns[1] = new Vector2(-1, 0); // Missing return must occupy its sample slot.
-            var cloud = LivoxMid360Sim.BuildRawPointCloud(returns, new[] { new Vector3(0, 0, -1) }, 0, 10, "livox_frame");
-            Check(cloud.Width == 20000 && cloud.Data.Length == 500000, "Raw floor/self points were downsampled or capped");
+            var direction = new Vector3(0, 0, -1);
+            var cloud = LivoxMid360Sim.BuildRawPointCloud(returns, new[] { direction, direction, direction, direction }, 0, 10, "livox_frame");
+            Check(cloud.Width == 20000 && cloud.Data.Length == 520000, "Raw floor/self points were downsampled or capped");
+            Check(cloud.Point_step == 26 && cloud.Row_step == 520000 && cloud.Height == 1 &&
+                !cloud.Is_bigendian && cloud.Is_dense && cloud.Header.Frame_id == "livox_frame",
+                "Livox PointCloud2 metadata changed");
+            string[] names = { "x", "y", "z", "intensity", "tag", "line", "timestamp" };
+            uint[] offsets = { 0, 4, 8, 12, 16, 17, 18 };
+            byte[] types = { 7, 7, 7, 7, 2, 2, 8 };
+            Check(cloud.Fields.Length == 7, "Livox PointCloud2 requires seven fields");
+            for (int i = 0; i < names.Length; i++)
+                Check(cloud.Fields[i].Name == names[i] && cloud.Fields[i].Offset == offsets[i] &&
+                    cloud.Fields[i].Datatype == types[i] && cloud.Fields[i].Count == 1,
+                    "Incorrect Livox PointCloud2 field: " + names[i]);
             Check(Mathf.Abs(BitConverter.ToSingle(cloud.Data, 8) + 0.15f) < 1e-6f, "Near own-surface return removed");
             Check(BitConverter.ToSingle(cloud.Data, 12) == 123, "Raw reflectivity changed");
-            Check(BitConverter.ToSingle(cloud.Data, 25) == 0 && BitConverter.ToSingle(cloud.Data, 29) == 0 &&
-                BitConverter.ToSingle(cloud.Data, 33) == 0, "Missing return is not (0,0,0)");
-            Check(Math.Abs(BitConverter.ToDouble(cloud.Data, 41) - BitConverter.ToDouble(cloud.Data, 16) - 5000) < 0.01,
+            Check(BitConverter.ToSingle(cloud.Data, 26) == 0 && BitConverter.ToSingle(cloud.Data, 30) == 0 &&
+                BitConverter.ToSingle(cloud.Data, 34) == 0 && BitConverter.ToSingle(cloud.Data, 38) == 0,
+                "Missing return is not (0,0,0) with zero intensity");
+            Check(BitConverter.ToDouble(cloud.Data, 18) == 10000000000.0 &&
+                cloud.Header.Stamp.Sec == 10 && cloud.Header.Stamp.Nanosec == 0,
+                "Livox timestamp must be absolute simulation nanoseconds at offset 18");
+            Check(Math.Abs(BitConverter.ToDouble(cloud.Data, 44) - BitConverter.ToDouble(cloud.Data, 18) - 5000) < 0.01,
                 "Raw per-point timestamps are not spaced by 5 microseconds");
-            Check(Mathf.Abs(BitConverter.ToSingle(cloud.Data, 499983) + 1.09f) < 1e-6f, "Tail of raw floor scan lost");
-            Check(cloud.Fields.Length == 6 && cloud.Fields[5].Name == "tag" && cloud.Data[24] == 0, "Normal return tag missing");
+            Check(Mathf.Abs(BitConverter.ToSingle(cloud.Data, 19999 * 26 + 8) + 1.09f) < 1e-6f, "Tail of raw floor scan lost");
+            for (int i = 0; i < 20000; i++)
+                Check(cloud.Data[i * 26 + 16] == 0 && cloud.Data[i * 26 + 17] == i % 4,
+                    "Normal tag or MID-360S line sequence changed at point " + i);
             VerifyBatchedRawOutput();
+            VerifyMotionDistortion();
         }
 
         private static void VerifyInspectorRateLimits()
@@ -154,7 +173,7 @@ namespace RobotSim.Editor
                 new Vector2(-1, 0), new Vector2(0.15f, 123),
                 new Vector2(6, 60), new Vector2(7, 70), new Vector2(8, 80)
             };
-            var pattern = new[] { Vector3.right, Vector3.up, Vector3.forward };
+            var pattern = new[] { Vector3.right, Vector3.up, Vector3.forward, Vector3.left };
             const double start = 10;
             var whole = LivoxMid360Sim.BuildRawPointCloud(returns, pattern, 2, start, "livox_frame");
             int[] counts = { 3, 5 };
@@ -165,23 +184,110 @@ namespace RobotSim.Editor
                 double scanStart = start + (double)offset / LivoxMid360Sim.PointRate;
                 var part = LivoxMid360Sim.BuildRawPointCloud(returns, pattern, (2 + offset) % pattern.Length,
                     scanStart, "livox_frame", offset, count);
-                Check(part.Width == count && part.Data.Length == count * 25, "Batched cloud lost its window boundaries");
+                Check(part.Width == count && part.Data.Length == count * 26, "Batched cloud lost its window boundaries");
                 bool equal = true;
                 for (int b = 0; b < part.Data.Length; b++)
-                    if (b % 25 < 16 || b % 25 == 24)
-                        equal &= part.Data[b] == whole.Data[offset * 25 + b];
+                    if (b % 26 < 18)
+                        equal &= part.Data[b] == whole.Data[offset * 26 + b];
                 // Equivalent double-precision timestamp expressions can differ
                 // by a few millionths of a nanosecond after window splitting.
                 for (int p = 0; p < count; p++)
-                    equal &= Math.Abs(BitConverter.ToDouble(part.Data, p * 25 + 16) -
-                        BitConverter.ToDouble(whole.Data, (offset + p) * 25 + 16)) < 0.01;
+                    equal &= Math.Abs(BitConverter.ToDouble(part.Data, p * 26 + 18) -
+                        BitConverter.ToDouble(whole.Data, (offset + p) * 26 + 18)) < 0.01;
+                for (int p = 0; p < count; p++)
+                    Check(part.Data[p * 26 + 17] == (2 + offset + p) % 4,
+                        "MID-360S line phase changed across a ROS window or pattern wrap");
                 Check(equal, "Batched scan changed ranges, reflectivity, pattern order or per-point timestamps");
-                double first = BitConverter.ToDouble(part.Data, 16);
+                double first = BitConverter.ToDouble(part.Data, 18);
                 if (offset > 0) Check(Math.Abs(first - previousTail - 5000) < 0.01, "Batch boundary lost raw samples");
-                previousTail = BitConverter.ToDouble(part.Data, (count - 1) * 25 + 16);
+                previousTail = BitConverter.ToDouble(part.Data, (count - 1) * 26 + 18);
                 Check(Math.Abs(part.Header.Stamp.Sec + part.Header.Stamp.Nanosec * 1e-9 - scanStart) < 2e-9,
                     "Batched cloud header refers to another scan window");
                 offset += count;
+            }
+        }
+
+        private static void VerifyMotionDistortion()
+        {
+            var wall = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            var sensorObject = new GameObject("MID360 temporal verification");
+            Vector3 origin = new Vector3(1000, 2000, 3000);
+            try
+            {
+                wall.layer = 31;
+                wall.transform.position = origin + Vector3.forward * 10;
+                wall.transform.localScale = new Vector3(100, 100, 0.2f);
+                using var temporal = new Mid360TemporalScene(false, 1 << 31);
+                temporal.Capture();
+                temporal.Capture();
+                for (int i = 0; i <= 10; i++)
+                {
+                    float fraction = i / 10f;
+                    LivoxMid360Sim.GetTimedRay(origin, Quaternion.identity, origin + Vector3.forward,
+                        Quaternion.identity, fraction, Vector3.zero, Vector3.right, out var rayOrigin, out var direction);
+                    var hit = temporal.Sample(rayOrigin, direction, fraction, 0.1f, 100);
+                    Check(Mathf.Abs(hit.x - (9.9f - fraction)) < 0.002f,
+                        "Per-point translation did not change measured distance");
+                    LivoxMid360Sim.GetTimedRay(origin, Quaternion.identity, origin,
+                        Quaternion.Euler(0, 60, 0), fraction, Vector3.zero, Vector3.right, out rayOrigin, out direction);
+                    hit = temporal.Sample(rayOrigin, direction, fraction, 0.1f, 100);
+                    Check(Mathf.Abs(hit.x - 9.9f / Mathf.Cos(fraction * Mathf.PI / 3)) < 0.002f,
+                        "Per-point rotation did not change measured distance");
+                }
+                // Rigid targets also move during acquisition, rather than all rays
+                // observing their latest pose. No live Transform is rewound.
+                wall.transform.position += Vector3.forward;
+                temporal.Capture();
+                Check(Mathf.Abs(temporal.Sample(origin, Vector3.forward, 0, 0.1f, 100).x - 9.9f) < 0.002f,
+                    "Moving target lost its earlier pose");
+                Check(Mathf.Abs(temporal.Sample(origin, Vector3.forward, 0.5f, 0.1f, 100).x - 10.4f) < 0.002f,
+                    "Moving target midpoint range is incorrect");
+                Check(Mathf.Abs(temporal.Sample(origin, Vector3.forward, 1, 0.1f, 100).x - 10.9f) < 0.002f,
+                    "Moving target final range is incorrect");
+                wall.transform.position -= Vector3.forward;
+                sensorObject.transform.position = origin;
+                var sensor = sensorObject.AddComponent<LivoxMid360Sim>();
+                var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+                var type = typeof(LivoxMid360Sim);
+                type.GetField("baseFrame", flags).SetValue(sensor, sensorObject.transform);
+                type.GetField("sensorPositionRos", flags).SetValue(sensor, Vector3.zero);
+                type.GetField("_temporalScene", flags).SetValue(sensor, new Mid360TemporalScene(false, 1 << 31));
+                type.GetField("_rayDirBaseRos", flags).SetValue(sensor,
+                    new[] { Vector3.right, Vector3.right, Vector3.right, Vector3.right });
+                type.GetField("_totalRays", flags).SetValue(sensor, 4);
+                var capture = type.GetMethod("CaptureTemporalInterval", flags);
+                capture.Invoke(sensor, new object[] { 10.0 });
+                for (int step = 1; step <= 10; step++)
+                {
+                    sensorObject.transform.position = origin + Vector3.forward * (step / 10f);
+                    capture.Invoke(sensor, new object[] { 10.0 + step * 0.01 });
+                }
+                var completed = (System.Collections.IEnumerable)type.GetField("_completedScans", flags).GetValue(sensor);
+                int frames = 0;
+                foreach (var frame in completed)
+                {
+                    frames++;
+                    var frameType = frame.GetType();
+                    var returns = (Vector2[])frameType.GetField("Returns").GetValue(frame);
+                    Check(returns.Length == 20000, "Timed acquisition lost points at physics boundaries");
+                    for (int i = 0; i < returns.Length; i++)
+                        Check(Mathf.Abs(returns[i].x - (9.9f - (float)i / 20000)) < 0.002f,
+                            "Scan contains a range measured at another point's timestamp");
+                    double end = (double)frameType.GetField("EndTime").GetValue(frame);
+                    double period = (double)frameType.GetField("Period").GetValue(frame);
+                    var cloud = LivoxMid360Sim.BuildRawPointCloud(returns,
+                        new[] { Vector3.right, Vector3.right, Vector3.right, Vector3.right }, 0, end - period, "livox_frame");
+                    Check(BitConverter.ToDouble(cloud.Data, 18) == 10000000000.0,
+                        "Timed acquisition header does not match the first physical measurement");
+                    Check(Math.Abs(BitConverter.ToDouble(cloud.Data, 19999 * 26 + 18) - 10099995000.0) < 0.01,
+                        "Timed acquisition tail does not match the last physical measurement");
+                }
+                Check(frames == 1, "Timed acquisition must assemble exactly one 10 Hz frame");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(wall);
+                UnityEngine.Object.DestroyImmediate(sensorObject);
             }
         }
 

@@ -19,17 +19,20 @@ namespace RobotSim.Sensors
         public const int PointsPerScan = 20000;
         public const double ScanPeriod = 0.1;
         public const double ImuPeriod = 0.005;
+        public const double ImuStandardGravity = 9.80665; // m/s² per g, independent of scene gravity.
         public const float MaxPointCloudPublishRateHz = 100f;
         public const float MaxImuPublishRateHz = 500f;
         [SerializeField] private string frameId = "livox_frame";
 
         [Header("Publishing Rates")]
-        [Tooltip("PointCloud2 messages per simulation second (0.1–100 Hz). The 200,000 raw samples/s budget is divided between messages; scene poses update at the capture/render rate.")]
+        [Tooltip("PointCloud2 messages per simulation second (0.1–100 Hz). The 200,000 raw samples/s budget is divided between messages; time-resolved mesh poses update at the physics rate.")]
         [SerializeField, Range(0.1f, MaxPointCloudPublishRateHz)] private float pointCloudPublishRateHz = 10f;
         [Tooltip("IMU messages per simulation second (0.1–500 Hz). Changes also apply during Play mode. Uses 100 ms of simulation-time delivery buffering to smooth physics-frame batches; measurement timestamps are preserved.")]
         [SerializeField, Range(0.1f, MaxImuPublishRateHz)] private float imuPublishRateHz = 200f;
 
         [Header("Scene Capture")]
+        [Tooltip("Measure each point at its simulation timestamp using interpolated poses and rendered mesh triangles. Disable only for legacy GPU scene snapshots.")]
+        [SerializeField] private bool simulateMotionDistortion = true;
         [SerializeField] private bool useGpu = true;
         [SerializeField, Range(64, 2048)] private int depthResolution = 1024;
         [Tooltip("Pose reference only. All robot surfaces remain visible to LiDAR.")]
@@ -37,8 +40,8 @@ namespace RobotSim.Sensors
         [Tooltip("ROS base_link coordinates, matching the external base_link -> livox_frame TF.")]
         [SerializeField] private Vector3 sensorPositionRos = new Vector3(0.24f, -0.25f, 1.09f);
 
-        // Capture is a scene snapshot, without motion distortion. Per-ray timestamps
-        // retain the existing scan-period convention for downstream localization.
+        // Published raw points stay in the instantaneous LiDAR frame. Deskew belongs
+        // to downstream consumers; the default acquisition includes scan motion.
         private sealed class ScanFrame
         {
             public Vector2[] Returns;
@@ -53,6 +56,16 @@ namespace RobotSim.Sensors
         private readonly object _scanLock = new object();
         private readonly Queue<ScanFrame> _completedScans = new Queue<ScanFrame>();
         private Vector3[] _worldDirections;
+        private Mid360TemporalScene _temporalScene;
+        private Rigidbody _baseBody;
+        private Vector3 _previousBasePosition;
+        private Quaternion _previousBaseRotation;
+        private double _previousCaptureTime;
+        private bool _haveCapture;
+        private double _sampleEpoch;
+        private long _sampleNumber;
+        private ScanFrame _acquiringScan;
+        private int _acquiringCount;
         private double _nextScanTime;
         private float _activePointCloudRateHz;
         private double _fractionalScanPoints;
@@ -62,6 +75,12 @@ namespace RobotSim.Sensors
         private long _lastCloudPaceTicks;
         private double _cloudPacingTimeSec;
         private double _nextCloudPublishTimeSec;
+        private readonly object _imuLock = new object();
+        private readonly Mid360ImuSampler _imuSampler = new Mid360ImuSampler();
+        private Vector3 _imuPreviousPosition;
+        private Quaternion _imuPreviousRotation;
+        private double _imuPreviousTime;
+        private bool _imuHavePose;
         private readonly Queue<sensor_msgs.msg.Imu> _completedImus = new Queue<sensor_msgs.msg.Imu>();
         private double _imuPacingTimeSec;
         private bool _imuPaceInitialized;
@@ -69,12 +88,14 @@ namespace RobotSim.Sensors
         // before sending so a short render-frame variation does not empty the
         // output queue and overflow a subscriber with the following catch-up burst.
         private const double ImuDeliveryBufferSec = 0.1;
-        private float _activeImuRateHz = 200f;
         private bool _destroying;
 
-        public bool UsingGpu => _sceneSampler != null && _sceneSampler.UsingGpu;
+        public bool UsingGpu => _temporalScene != null ? _temporalScene.UsingGpu : _sceneSampler != null && _sceneSampler.UsingGpu;
         public long PublishedScanCount { get; private set; }
         public int LastPublishedPointCount { get; private set; }
+        public long GeneratedImuCount { get; private set; }
+        public long PublishedImuCount { get; private set; }
+        public double LastGeneratedImuTimeSec { get; private set; }
         public float PointCloudPublishRateHz => NormalizePublishRate(pointCloudPublishRateHz, 10f, MaxPointCloudPublishRateHz);
         public float ImuPublishRateHz => _requestedImuRateHz;
 
@@ -119,9 +140,17 @@ namespace RobotSim.Sensors
 
         public static void GetSimTime(out int sec, out uint nanosec)
         {
-            double t = CurrentSimTimeSec;
-            sec = (int)t;
-            nanosec = (uint)((t - sec) * 1e9);
+            ToRosTime(CurrentSimTimeSec, out sec, out nanosec);
+        }
+
+        public static void ToRosTime(double time, out int sec, out uint nanosec)
+        {
+            if (double.IsNaN(time) || double.IsInfinity(time)) throw new ArgumentOutOfRangeException(nameof(time));
+            long ns = checked((long)Math.Round(time * 1e9, MidpointRounding.AwayFromZero));
+            long seconds = Math.DivRem(ns, 1000000000L, out long fraction);
+            if (fraction < 0) { seconds--; fraction += 1000000000L; }
+            sec = checked((int)seconds);
+            nanosec = (uint)fraction;
         }
 
         private static readonly object TimeLock = new object();
@@ -140,10 +169,7 @@ namespace RobotSim.Sensors
         private int _scanStartIndex = 0;
 
         private double _lastStepSimSec = 10.0;
-        private double _imuAccumSec = 0.0;
         private double _clockAccumSec;
-        private double _lastImuTime;
-        private float _lastImuAngularVelocity;
         private bool _executableRegistered = false;
 
         private void Awake()
@@ -162,7 +188,11 @@ namespace RobotSim.Sensors
 
         private void FixedUpdate()
         {
-            // ROS time follows Unity physics, including pause and timeScale.
+            // At entry the preceding physics step is complete. Capture before
+            // advancing the clock for the next simulation step, never in LateUpdate.
+            double measurementTime = CurrentSimTimeSec;
+            if (_rayDirBaseRos != null) CaptureImuInterval(measurementTime);
+            if (_temporalScene != null) CaptureTemporalInterval(measurementTime);
             lock (TimeLock) _simTimeSec += Time.fixedDeltaTime;
         }
 
@@ -174,8 +204,17 @@ namespace RobotSim.Sensors
                 var drive = GetComponentInParent<KinematicOmniDrive>();
                 if (drive != null) baseFrame = drive.transform;
             }
-            _sceneSampler = new Mid360SceneSampler(useGpu, depthResolution);
-            Debug.Log($"[LivoxMid360Sim] Scene capture: {(_sceneSampler.UsingGpu ? "GPU depth + compute" : "CPU physics")}");
+            _baseBody = baseFrame != null ? baseFrame.GetComponent<Rigidbody>() : null;
+            if (simulateMotionDistortion)
+            {
+                _temporalScene = new Mid360TemporalScene(useGpu);
+                Debug.Log($"[LivoxMid360Sim] Time-resolved mesh BVH acquisition: {(_temporalScene.UsingGpu ? "GPU compute" : "CPU triangles")}; per-point sensor and mesh poses interpolated between physics steps.");
+            }
+            else
+            {
+                _sceneSampler = new Mid360SceneSampler(useGpu, depthResolution);
+                Debug.Log($"[LivoxMid360Sim] Legacy snapshot capture: {(_sceneSampler.UsingGpu ? "GPU depth + compute" : "CPU physics")}; no motion distortion.");
+            }
             InitROS2();
         }
 
@@ -188,8 +227,9 @@ namespace RobotSim.Sensors
                 _executableRegistered = false;
             }
             _sceneSampler?.Dispose();
+            _temporalScene?.Dispose();
             lock (_scanLock) _completedScans.Clear();
-            _completedImus.Clear();
+            lock (_imuLock) _completedImus.Clear();
         }
 
         private void LoadPattern()
@@ -258,6 +298,7 @@ namespace RobotSim.Sensors
         // Run after drive/opponent/cloth Update so capture sees their displayed poses.
         private void LateUpdate()
         {
+            _temporalScene?.PollReadback();
             if (_sceneSampler == null) return;
             _sceneSampler.PollReadback();
             if (_sceneSampler.IsBusy || _cloudPub == null || _totalRays == 0) return;
@@ -327,6 +368,90 @@ namespace RobotSim.Sensors
             _scanStartIndex = startIndex;
         }
 
+        private void CaptureTemporalInterval(double now)
+        {
+            Transform reference = baseFrame != null ? baseFrame : transform;
+            Vector3 position = _baseBody != null ? _baseBody.position : reference.position;
+            Quaternion rotation = _baseBody != null ? _baseBody.rotation : reference.rotation;
+            _temporalScene.Capture();
+            if (!_haveCapture)
+            {
+                _sampleEpoch = now;
+                _haveCapture = true;
+            }
+            else
+            {
+                long firstNumber = _sampleNumber;
+                int firstPattern = _scanStartIndex;
+                var rays = new List<Mid360TemporalScene.TimedRay>();
+                while (true)
+                {
+                    double time = _sampleEpoch + (double)_sampleNumber / PointRate;
+                    if (time >= now - 1e-10) break;
+                    float fraction = (float)((time - _previousCaptureTime) / (now - _previousCaptureTime));
+                    GetTimedRay(_previousBasePosition, _previousBaseRotation, position, rotation,
+                        fraction, sensorPositionRos, _rayDirBaseRos[_scanStartIndex], out var origin, out var direction);
+                    rays.Add(new Mid360TemporalScene.TimedRay
+                    {
+                        Origin = new Vector4(origin.x, origin.y, origin.z, fraction),
+                        Direction = new Vector4(direction.x, direction.y, direction.z, 0)
+                    });
+                    _sampleNumber++;
+                    _scanStartIndex = (_scanStartIndex + 1) % _totalRays;
+                }
+                double firstTime = _sampleEpoch + (double)firstNumber / PointRate;
+                float rate = PointCloudPublishRateHz;
+                // Submission owns this interval's immutable mesh/pose snapshots.
+                // Readbacks are delivered in order, never resampled at a newer pose.
+                _temporalScene.Submit(rays.ToArray(), MinRange, MaxRange,
+                    returns => AppendTemporalSamples(returns, firstPattern, firstTime, rate));
+            }
+            _previousBasePosition = position;
+            _previousBaseRotation = rotation;
+            _previousCaptureTime = now;
+        }
+
+        private void AppendTemporalSamples(Vector2[] returns, int firstPattern, double firstTime, float rate)
+        {
+            if (_destroying) return;
+            for (int i = 0; i < returns.Length; i++)
+            {
+                if (_acquiringScan == null)
+                {
+                    if (rate != _activePointCloudRateHz)
+                    {
+                        _activePointCloudRateHz = rate;
+                        _fractionalScanPoints = 0;
+                    }
+                    int count = CalculateScanPointCount(rate, ref _fractionalScanPoints);
+                    _acquiringScan = new ScanFrame
+                    {
+                        Returns = new Vector2[count], PointCount = count,
+                        StartIndex = (firstPattern + i) % _totalRays,
+                        Period = (double)count / PointRate,
+                        EndTime = firstTime + (double)(i + count) / PointRate
+                    };
+                    _acquiringCount = 0;
+                }
+                _acquiringScan.Returns[_acquiringCount++] = returns[i];
+                if (_acquiringCount == _acquiringScan.PointCount)
+                {
+                    lock (_scanLock) _completedScans.Enqueue(_acquiringScan);
+                    _acquiringScan = null;
+                }
+            }
+        }
+
+        public static void GetTimedRay(Vector3 previousPosition, Quaternion previousRotation,
+            Vector3 position, Quaternion rotation, float fraction, Vector3 sensorOffsetRos,
+            Vector3 directionBaseRos, out Vector3 origin, out Vector3 direction)
+        {
+            Quaternion pose = Quaternion.Slerp(previousRotation, rotation, fraction);
+            origin = Vector3.Lerp(previousPosition, position, fraction) +
+                pose * new Vector3(-sensorOffsetRos.y, sensorOffsetRos.z, sensorOffsetRos.x);
+            direction = pose * new Vector3(-directionBaseRos.y, directionBaseRos.z, directionBaseRos.x);
+        }
+
         private void OnBackgroundTick()
         {
             if (_clockPub == null || _imuPub == null || _cloudPub == null) return;
@@ -342,22 +467,6 @@ namespace RobotSim.Sensors
                 {
                     _clockAccumSec %= 0.01;
                     PublishClock(currentSim);
-                }
-
-                float imuHz = _requestedImuRateHz;
-                if (imuHz != _activeImuRateHz)
-                {
-                    _activeImuRateHz = imuHz;
-                    // Do not reinterpret an old, slow-rate remainder as past samples
-                    // when increasing the rate from the Inspector.
-                    _imuAccumSec = 0;
-                }
-                double imuPeriod = 1.0 / imuHz;
-                _imuAccumSec += delta;
-                while (_imuAccumSec + 1e-9 >= imuPeriod)
-                {
-                    _imuAccumSec = Math.Max(0, _imuAccumSec - imuPeriod);
-                    QueueImuSample(currentSim - _imuAccumSec);
                 }
             }
 
@@ -397,32 +506,41 @@ namespace RobotSim.Sensors
 
         private void PublishReadyImus(double currentSim, double elapsed, float timeScale)
         {
-            // Only the executor touches this queue. Build each measurement at
-            // its physics update; publication must not resample a newer pose.
-            if (!_imuPaceInitialized && _completedImus.Count > 0)
+            // Main thread produces immutable measurements. The executor only paces
+            // delivery; it must never read physics state or alter acquisition stamps.
+            lock (_imuLock)
             {
-                var stamp = _completedImus.Peek().Header.Stamp;
-                _imuPacingTimeSec = stamp.Sec + stamp.Nanosec * 1e-9 - ImuDeliveryBufferSec;
-                _imuPaceInitialized = true;
+                if (!_imuPaceInitialized && _completedImus.Count > 0)
+                {
+                    var stamp = _completedImus.Peek().Header.Stamp;
+                    _imuPacingTimeSec = stamp.Sec + stamp.Nanosec * 1e-9 - ImuDeliveryBufferSec;
+                    _imuPaceInitialized = true;
+                }
+                else _imuPacingTimeSec = Math.Min(currentSim, _imuPacingTimeSec + elapsed * timeScale);
             }
-            else
-                _imuPacingTimeSec = Math.Min(currentSim, _imuPacingTimeSec + elapsed * timeScale);
-
-            while (_completedImus.Count > 0)
+            while (true)
             {
-                var sample = _completedImus.Peek();
-                double sampleTime = sample.Header.Stamp.Sec + sample.Header.Stamp.Nanosec * 1e-9;
-                if (sampleTime > _imuPacingTimeSec + 1e-9) break;
-                _imuPub.Publish(_completedImus.Dequeue());
+                sensor_msgs.msg.Imu sample;
+                lock (_imuLock)
+                {
+                    if (_completedImus.Count == 0)
+                    {
+                        if (_imuPacingTimeSec + 1e-9 >= currentSim) _imuPaceInitialized = false;
+                        break;
+                    }
+                    sample = _completedImus.Peek();
+                    double time = sample.Header.Stamp.Sec + sample.Header.Stamp.Nanosec * 1e-9;
+                    if (time > _imuPacingTimeSec + 1e-9) break;
+                    _completedImus.Dequeue();
+                }
+                _imuPub.Publish(sample);
+                PublishedImuCount++;
             }
-            if (_completedImus.Count == 0 && _imuPacingTimeSec + 1e-9 >= currentSim)
-                _imuPaceInitialized = false;
         }
 
         private void PublishClock(double simTimeSec)
         {
-            int sec = (int)simTimeSec;
-            uint nanosec = (uint)((simTimeSec - sec) * 1e9);
+            ToRosTime(simTimeSec, out int sec, out uint nanosec);
             rosgraph_msgs.msg.Clock clockMsg = new rosgraph_msgs.msg.Clock();
             clockMsg.Clock_.Sec = sec;
             clockMsg.Clock_.Nanosec = nanosec;
@@ -447,42 +565,65 @@ namespace RobotSim.Sensors
             );
         }
 
-        private void QueueImuSample(double simTimeSec)
+        private void CaptureImuInterval(double time)
         {
-            int sec = (int)simTimeSec;
-            uint nanosec = (uint)((simTimeSec - sec) * 1e9);
+            Transform reference = baseFrame != null ? baseFrame : transform;
+            Quaternion rotation = _baseBody != null ? _baseBody.rotation : reference.rotation;
+            Vector3 position = _baseBody != null ? _baseBody.position : reference.position;
+            Vector3 velocity = Vector3.zero, omega = Vector3.zero;
+            if (_baseBody != null)
+            {
+                // Rigidbody velocities refer to its centre of mass, not base_link.
+                velocity = _baseBody.linearVelocity;
+                omega = _baseBody.angularVelocity;
+            }
+            else if (_imuHavePose && time > _imuPreviousTime)
+            {
+                float dt = (float)(time - _imuPreviousTime);
+                velocity = (position - _imuPreviousPosition) / dt;
+                Quaternion change = rotation * Quaternion.Inverse(_imuPreviousRotation);
+                change.ToAngleAxis(out float angle, out Vector3 axis);
+                if (angle > 180) angle -= 360;
+                if (Mathf.Abs(angle) > 1e-6f) omega = axis * (angle * Mathf.Deg2Rad / dt);
+            }
+            Vector3 chipBaseRos = sensorPositionRos + RotateLivoxToBase(0.011f, 0.02329f, -0.04412f);
+            Vector3 arm = new Vector3(-chipBaseRos.y, chipBaseRos.z, chipBaseRos.x);
+            if (_baseBody != null) arm -= _baseBody.centerOfMass;
+            _imuSampler.Capture(new Mid360ImuSampler.State
+            {
+                Time = time, Rotation = rotation, VelocityWorld = velocity, AngularVelocityWorld = omega
+            }, NormalizePublishRate(imuPublishRateHz, 200f, MaxImuPublishRateHz), arm, Physics.gravity, sample =>
+            {
+                var message = BuildImuMessage(sample, frameId);
+                lock (_imuLock) _completedImus.Enqueue(message);
+                GeneratedImuCount++;
+                LastGeneratedImuTimeSec = sample.Time;
+            });
+            _imuPreviousPosition = position; _imuPreviousRotation = rotation;
+            _imuPreviousTime = time; _imuHavePose = true;
+        }
 
-            sensor_msgs.msg.Imu imu = new sensor_msgs.msg.Imu();
-            imu.Header.Frame_id = frameId;
-            imu.Header.Stamp.Sec = sec;
-            imu.Header.Stamp.Nanosec = nanosec;
-
-            var motion = KinematicOmniDrive.GetMotionState();
-            float wzBase = motion.AngularVelocityRadZ;
-            Vector3 omegaLivox = RotateBaseToLivox(0f, 0f, wzBase);
-            imu.Angular_velocity.X = omegaLivox.x;
-            imu.Angular_velocity.Y = omegaLivox.y;
-            imu.Angular_velocity.Z = omegaLivox.z;
-
-            Vector3 accelBaseUnity = motion.LinearAccelerationBase;
-            Vector3 omegaBase = new Vector3(0, 0, wzBase);
-            float alpha = _lastImuTime > 0 && simTimeSec > _lastImuTime
-                ? (wzBase - _lastImuAngularVelocity) / (float)(simTimeSec - _lastImuTime) : 0f;
-            _lastImuTime = simTimeSec;
-            _lastImuAngularVelocity = wzBase;
-            // MID-360S manual: IMU chip is (11.0, 23.29, -44.12) mm in LiDAR frame.
-            Vector3 imuLeverArm = sensorPositionRos + RotateLivoxToBase(0.011f, 0.02329f, -0.04412f);
-            Vector3 specificForce = new Vector3(accelBaseUnity.z, -accelBaseUnity.x, accelBaseUnity.y + 9.81f)
-                + Vector3.Cross(new Vector3(0, 0, alpha), imuLeverArm)
-                + Vector3.Cross(omegaBase, Vector3.Cross(omegaBase, imuLeverArm));
-            Vector3 accLivox = RotateBaseToLivox(specificForce.x, specificForce.y, specificForce.z);
-            imu.Linear_acceleration.X = accLivox.x;
-            imu.Linear_acceleration.Y = accLivox.y;
-            imu.Linear_acceleration.Z = accLivox.z;
-            // The hardware outputs gyroscope/accelerometer measurements, not an attitude estimate.
+        public static sensor_msgs.msg.Imu BuildImuMessage(Mid360ImuSampler.Sample sample, string frame)
+        {
+            ToRosTime(sample.Time, out int sec, out uint nanosec);
+            var imu = new sensor_msgs.msg.Imu();
+            imu.Header.Frame_id = frame;
+            imu.Header.Stamp.Sec = sec; imu.Header.Stamp.Nanosec = nanosec;
+            Quaternion inverse = Quaternion.Inverse(sample.Rotation);
+            Vector3 angular = inverse * sample.AngularVelocityWorld;
+            // Angular velocity is an axial vector: the handedness conversion
+            // has the opposite sign from the polar acceleration conversion.
+            Vector3 angularLivox = RotateBaseToLivox(-angular.z, angular.x, -angular.y);
+            Vector3 acceleration = inverse * sample.SpecificForceWorld;
+            Vector3 accelerationLivox = RotateBaseToLivox(acceleration.z, -acceleration.x, acceleration.y);
+            imu.Angular_velocity.X = angularLivox.x; imu.Angular_velocity.Y = angularLivox.y; imu.Angular_velocity.Z = angularLivox.z;
+            // livox_ros_driver2 forwards the device's accelerometer values in g.
+            // Keep physics/sampling in SI and convert only at the ROS adapter.
+            imu.Linear_acceleration.X = accelerationLivox.x / ImuStandardGravity;
+            imu.Linear_acceleration.Y = accelerationLivox.y / ImuStandardGravity;
+            imu.Linear_acceleration.Z = accelerationLivox.z / ImuStandardGravity;
             imu.Orientation_covariance[0] = -1;
-
-            _completedImus.Enqueue(imu);
+            return imu;
         }
 
         private void PublishPointCloud(ScanFrame scan)
@@ -502,9 +643,10 @@ namespace RobotSim.Sensors
             if (count < 0) count = returns.Length - returnOffset;
             if (returnOffset < 0 || count < 0 || returnOffset > returns.Length - count)
                 throw new ArgumentOutOfRangeException(nameof(returnOffset));
-            int headerSec = (int)startSimTimeSec;
-            uint headerNanosec = (uint)((startSimTimeSec - headerSec) * 1e9);
-            const int pointStep = 25;
+            ToRosTime(startSimTimeSec, out int headerSec, out uint headerNanosec);
+            // livox_ros_driver2 xfer_format=0: packed LivoxPointXyzrtlt.
+            // https://github.com/Livox-SDK/livox_ros_driver2/blob/master/src/comm/comm.h
+            const int pointStep = 26;
             byte[] pointData = new byte[count * pointStep];
             using var pointWriter = new BinaryWriter(new MemoryStream(pointData));
             for (int i = 0; i < count; i++)
@@ -520,8 +662,12 @@ namespace RobotSim.Sensors
                 pointWriter.Write(ptLivox.y);
                 pointWriter.Write(ptLivox.z);
                 pointWriter.Write(intensity);
-                pointWriter.Write(stampNs);
                 pointWriter.Write((byte)0); // Normal ideal return. No synthetic weather/noise classification.
+                // The official MID-360/S adapter assigns packet point index % 4.
+                // Its 96-point packets and our 800,000-ray pattern are divisible
+                // by four, so the pattern index preserves phase across ROS windows.
+                pointWriter.Write((byte)(rayIdx % 4));
+                pointWriter.Write(stampNs); // Absolute simulation timestamp, nanoseconds.
             }
 
             sensor_msgs.msg.PointCloud2 cloud = new sensor_msgs.msg.PointCloud2();
@@ -536,14 +682,14 @@ namespace RobotSim.Sensors
             cloud.Is_dense = true;
             cloud.Data = pointData;
 
-            cloud.Fields = new sensor_msgs.msg.PointField[6];
+            cloud.Fields = new sensor_msgs.msg.PointField[7];
             cloud.Fields[0] = new sensor_msgs.msg.PointField { Name = "x", Offset = 0, Datatype = 7, Count = 1 };
             cloud.Fields[1] = new sensor_msgs.msg.PointField { Name = "y", Offset = 4, Datatype = 7, Count = 1 };
             cloud.Fields[2] = new sensor_msgs.msg.PointField { Name = "z", Offset = 8, Datatype = 7, Count = 1 };
             cloud.Fields[3] = new sensor_msgs.msg.PointField { Name = "intensity", Offset = 12, Datatype = 7, Count = 1 };
-            cloud.Fields[4] = new sensor_msgs.msg.PointField { Name = "timestamp", Offset = 16, Datatype = 8, Count = 1 };
-
-            cloud.Fields[5] = new sensor_msgs.msg.PointField { Name = "tag", Offset = 24, Datatype = 2, Count = 1 };
+            cloud.Fields[4] = new sensor_msgs.msg.PointField { Name = "tag", Offset = 16, Datatype = 2, Count = 1 };
+            cloud.Fields[5] = new sensor_msgs.msg.PointField { Name = "line", Offset = 17, Datatype = 2, Count = 1 };
+            cloud.Fields[6] = new sensor_msgs.msg.PointField { Name = "timestamp", Offset = 18, Datatype = 8, Count = 1 };
 
             return cloud;
         }

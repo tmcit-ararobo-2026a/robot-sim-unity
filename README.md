@@ -18,9 +18,9 @@ Isaac Sim と同一のフィールド・機体ジオメトリ、Livox Mid-360 80
   - 床の色分け・ラインに含まれる厚さ1mmの縁を衝突形状から除き、平らな床コライダーで支えます。外壁・中央教壇の形状は維持します。
   - バケツ台座と中央教壇は実寸の閉じた箱形コライダーで支えます。台座とバケツは独立した物理オブジェクトで、台座が倒れたり移動したりするとバケツも接触・摩擦に応じて動きます。旧メッシュの裏向き面と、斜め衝突時に三角形の縁で機体が持ち上がる挙動を避けています。
 - **Livox Mid-360 LiDAR / IMU の忠実な再現**:
-  - Isaac Sim 拡張機能の `mid360.npy` から抽出した 80 万本の非反復走査角度バイナリ (`mid360_pattern.bin`) を直接読み込み、マルチスレッド並列レイキャストを実行。
+  - Isaac Sim 拡張機能の `mid360.npy` から抽出した 80 万本の非反復走査角度バイナリ (`mid360_pattern.bin`) を直接読み込み、各点の時刻で位置・姿勢を補間し、表示メッシュの三角形をCompute Shader＋2段BVHで直接測距。
   - 実機・Isaac Sim の逆さチルトマウント姿勢（`x=0.24, y=-0.25, z=1.09, roll=3.13 rad, pitch=-0.273 rad`）で照射。
-  - Linux UDP ソケット受信バッファ溢れ（パケットドロップ）を防ぐ床面サブサンプリングを実装。
+  - 床・自機・無反射のサンプルを間引かず配信。各点は計測時のLiDAR座標系に保持し、走査歪みの補正は受信側で行います。
 - **RealSense D435 & 布射出・3D 弾道追跡**:
   - 実機カメラの内部パラメータ・画角（30 Hz, `rgb8` カラー + `16UC1` 16-bit 深度 mm単位）を配信。
   - `/belt/throw` 射出信号により、`realsense_dust_cloth` の CUDA 追跡ゲートを正確に通過する放物線弾道物理を再現。
@@ -91,10 +91,42 @@ git lfs pull
 | --- | --- | --- | --- |
 | `/clock` | `rosgraph_msgs/msg/Clock` | 100 Hz | シミュレーション同期時計 |
 | `/livox/lidar` | `sensor_msgs/msg/PointCloud2` | 10 Hz | 3D点群 (`livox_frame`, タイムスタンプ付) |
-| `/livox/imu` | `sensor_msgs/msg/Imu` | 100 Hz | Mid-360 センサ座標系角速度・加速度 |
+| `/livox/imu` | `sensor_msgs/msg/Imu` | 200 Hz（既定） | Mid-360 センサ座標系角速度・加速度 |
 | `/camera/camera/color/image_raw` | `sensor_msgs/msg/Image` | 30 Hz | RealSense カラー映像 (`rgb8`, 640x480) |
 | `/camera/camera/depth/image_rect_raw` | `sensor_msgs/msg/Image` | 30 Hz | RealSense 16-bit 深度画像 (`16UC1`, mm単位) |
 | `/camera/camera/color/camera_info` | `sensor_msgs/msg/CameraInfo` | 30 Hz | カメラ内部パラメータ |
+
+`/livox/lidar` は公式 `livox_ros_driver2` の `xfer_format=0`（PointXYZRTLT）に合わせた、パディングなし・リトルエンディアンの26バイト／点です。
+
+| フィールド | 型 | バイト位置 |
+| --- | --- | ---: |
+| `x`, `y`, `z` | FLOAT32 | 0, 4, 8 |
+| `intensity` | FLOAT32 | 12 |
+| `tag` | UINT8 | 16 |
+| `line` | UINT8 | 17 |
+| `timestamp` | FLOAT64 | 18 |
+
+座標はm、反射強度は0〜255（未校正は0）、`tag` は理想的な通常反射として0です。`line` は走査順に0〜3を繰り返し、メッセージ境界でも位相を維持します。`header.stamp` は先頭点のシミュレーション時刻（秒・ナノ秒）、各点の `timestamp` は同じ時計の絶対ナノ秒値です。受信側でバイト位置を固定していた場合は旧25バイト形式からの変更が必要です。
+
+既定の `Simulate Motion Distortion` では、物理ステップごとに機体・表示メッシュの剛体姿勢を記録し、各点の計測時刻に位置を線形補間、回転を球面補間して個別に測距します。センサー取付位置も機体姿勢で回転させます。毎秒20万サンプルの取得を物理ステップで進め、10 Hzなら2万点ずつ配信します。レンダーフレームが遅れても、過去の点を最新姿勢で再計測しません。生点群に走査歪みが入り、deskewは受信側が行います。
+
+このモードの既定（`Use Gpu` 有効）は、`MeshFilter` の表示用三角形と `SkinnedMeshRenderer.BakeMesh` の頂点をCompute Shaderで直接計測します。メッシュ内のBVHと、物体の移動範囲を含むシーンBVHの2段で探索し、Colliderのない薄い部品や穴のある形状も扱います。剛体の位置・回転・スケール、スキンメッシュの頂点を各点の時刻で補間します。静的メッシュは共有・キャッシュし、スキン形状だけ更新します。非同期GPU readbackは取得順に処理し、読み戻し失敗時も保存済みのメッシュ・姿勢でCPUの三角形BVHを再実行します。`Use Gpu` 無効時やGPU非対応時にも同じメッシュ計測を使い、Colliderへ置き換えません。キューが64区間に達した場合だけ古いGPU結果を待ち、サンプルを捨てずにメモリを制限します。
+
+メッシュのRead/Writeが必要です。読み取れないメッシュは明示的なエラーにします。静的な `MeshFilter.sharedMesh` の頂点を直接変更する場合は、新しいMeshへの差し替えが必要です。現在の計測対象は有効なMeshRenderer／SkinnedMeshRendererの三角形で、両面を検出します。テクスチャの透過・alpha clip、頂点シェーダーによる見た目の変形、Terrain／パーティクル／LineRenderer、親の非一様スケールと回転によるシアー変形は再現しません。SkinnedMeshRendererのスキン変形は頂点補間しますが、トポロジーの変更は区間内で補間しません。物理ステップ内の衝突軌道や物体の出現・消滅時刻も補間による近似です。
+
+時刻間隔は20万サンプル/秒の理想化モデルで、実機UDPのパケット単位の時刻ゆらぎは再現しません。`Simulate Motion Distortion` を無効にした場合だけ従来の深度方式（GPUまたはCollider）で瞬間のシーンをまとめて計測します。
+
+IMUは点群と同じ物理ステップの時計・Rigidbody状態から取得します。既定200 Hzの各サンプル時刻（5 ms刻み）で姿勢・角速度を補間し、区間の速度差から求めた加速度、重力、IMUチップ位置の回転加速度を使って値を確定します。Rigidbody速度の基準である重心からIMUチップまでの距離を使います。配信スレッドは保存済みメッセージを送るだけで、後の状態を過去時刻へ割り当てません。100 msの配信バッファは計測タイムスタンプを変更しません。`header.stamp` は公式ドライバと同様に取得時刻を秒・ナノ秒に分けた値で、シミュレーションではPTP/GPS時計の代わりに `/clock` と共通のシミュレーション時計を使います。IMU・点群ヘッダー・`/clock` のナノ秒変換は共通化しています。
+
+物理ステップは10 msなので、その間のIMUは補間による近似です。物理ステップ内の衝撃や実機のノイズ・遅延・時計ゆらぎは未モデル化です。角速度はrad/s、加速度は公式UDPと `livox_ros_driver2` に合わせてg単位で配信します。物理計算はm/s²で行い、ROSメッセージ生成時だけ標準重力 `1 g = 9.80665 m/s²` で割ります。この係数はシーンの重力設定とは独立です。Unityの既定重力9.81 m/s²なら静止時の加速度ノルムは約1.00034 gです。旧シミュレータのm/s²出力を前提とした受信側は単位の確認が必要です。SI単位へ戻す場合は9.80665を掛けてください。[公式IMU配信処理](https://github.com/Livox-SDK/livox_ros_driver2/blob/master/src/lddc.cpp)、[公式IMUプロトコル](https://livox-wiki-en.readthedocs.io/en/latest/tutorials/new_product/mid360/livox_eth_protocol_mid360.html)。`RobotSim > Verify MID360 IMU Timing` で取得時刻・補間・Rigidbody連携・点群時計との一致を検査し、`Temp/Mid360ImuVerification.json` に記録します。
+
+CustomMsg形式には対応していません。`RobotSim > Verify MID360 Scene Capture` の検証には、並進・旋回・可動物体の解析解との距離比較と、物理ステップをまたぐ2万点の取得・タイムスタンプ検査も含まれます。
+
+`RobotSim > Verify MID360 Mesh BVH` でGPUメッシュ測距を検証できます。2万点の並進・旋回の解析解、複数の非同期取得、Colliderのない薄い形状、穴、非一様・負スケール、無効Renderer、スキン頂点の補間を検査し、結果は `Temp/Mid360MeshVerification.json` に保存します。
+
+参考測定（この環境のMesa Intel RPL-P、Editor、約116万三角形・119物体）: 初回BVH構築は約7.1秒、実走査パターン2万点のGPU投入〜読み戻しは約101 msでした。性能保証値ではなく、描画や他センサーとの併用で実時間の配信Hzは低下し得ます。毎秒20万点はシミュレーション時間に対する取得レートです。
+
+形式の参照元: [公式フィールド定義・配信処理](https://github.com/Livox-SDK/livox_ros_driver2/blob/master/src/lddc.cpp)、[公式構造体・MID-360のline数](https://github.com/Livox-SDK/livox_ros_driver2/blob/master/src/comm/comm.h)。
 
 ### 購読トピック (ROS 2 -> Unity)
 

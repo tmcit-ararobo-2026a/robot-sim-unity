@@ -22366,8 +22366,9 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   frameId: livox_frame
-  pointCloudPublishRateHz: 10
+  pointCloudPublishRateHz: 20
   imuPublishRateHz: 200
+  simulateMotionDistortion: 1
   useGpu: 1
   depthResolution: 1024
   baseFrame: {fileID: 0}
