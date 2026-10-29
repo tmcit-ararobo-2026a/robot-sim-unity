@@ -130,8 +130,29 @@ namespace RobotSim.Editor
                 scene.Submit(detail, 0.1f, 100, result =>
                 {
                     Check(Mathf.Abs(result[0].x - 9.9f) < 0.002f, "Solid collider incorrectly filled mesh hole");
-                    Check(Mathf.Abs(result[1].x - Mathf.Sqrt(25 + 2.25f)) < 0.002f, "Frame triangle surface missing");
+                    Check(Mathf.Abs(result[1].x - Mathf.Sqrt(25 + 2.25f)) < 0.002f,
+                        "Frame triangle surface missing: GPU=" + result[1] + ", CPU=" +
+                        scene.Sample(origin, detail[1].Direction, 0, 0.1f, 100));
                     Check(result[2].x > 2.99f && result[2].x < 3.01f, "Sub-pixel render-only triangle was missed");
+                });
+                scene.WaitForPending();
+                // The diagonal shared by the two triangles of the right-hand
+                // quad must stay solid on GPUs with fused float arithmetic.
+                var seamRays = new Mid360TemporalScene.TimedRay[9];
+                for (int i = 0; i < seamRays.Length; i++)
+                {
+                    float x = 1.1f + i * 0.1f;
+                    seamRays[i] = Ray(origin, new Vector3(x, 4 * (x - 1) - 2, 5).normalized, 0);
+                }
+                scene.Submit(seamRays, 0.1f, 100, result =>
+                {
+                    for (int i = 0; i < result.Length; i++)
+                    {
+                        float expected = 5 / seamRays[i].Direction.z;
+                        Check(Mathf.Abs(result[i].x - expected) < 0.002f, "GPU missed a shared planar triangle edge");
+                        Check(Mathf.Abs(scene.Sample(origin, seamRays[i].Direction, 0, 0.1f, 100).x - expected) < 0.002f,
+                            "CPU missed a shared planar triangle edge");
+                    }
                 });
                 scene.WaitForPending();
                 // Non-uniform scale and negative scale retain world metre distances.

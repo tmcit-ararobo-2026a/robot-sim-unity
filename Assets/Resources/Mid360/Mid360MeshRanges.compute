@@ -59,7 +59,12 @@ bool TriangleHit(float3 origin, float3 direction, float3 a, float3 b, float3 c, 
     float3 q = cross(delta, e1);
     float v = dot(direction, q) * inv;
     distance = dot(e2, q) * inv;
-    return abs(det) >= 1e-9 && u >= 0 && u <= 1 && v >= 0 && u+v <= 1 && distance >= 0 && distance <= limit;
+    // GPU fused arithmetic can put a shared triangle edge just outside both
+    // neighbours. Allow floating-point roundoff in barycentric coordinates so
+    // a seam in a planar mesh does not turn into a hole (not a range tolerance).
+    const float edgeTolerance = 1e-6;
+    return abs(det) >= 1e-9 && u >= -edgeTolerance && u <= 1 + edgeTolerance &&
+        v >= -edgeTolerance && u+v <= 1 + edgeTolerance && distance >= 0 && distance <= limit;
 }
 [numthreads(64,1,1)]
 void SampleMeshRanges(uint3 id : SV_DispatchThreadID)

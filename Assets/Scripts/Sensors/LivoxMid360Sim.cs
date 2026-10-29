@@ -5,7 +5,6 @@ using UnityEngine;
 using ROS2;
 using RobotSim.Control;
 using Debug = UnityEngine.Debug;
-using Stopwatch = System.Diagnostics.Stopwatch;
 
 namespace RobotSim.Sensors
 {
@@ -27,7 +26,7 @@ namespace RobotSim.Sensors
         [Header("Publishing Rates")]
         [Tooltip("PointCloud2 messages per simulation second (0.1–100 Hz). The 200,000 raw samples/s budget is divided between messages; time-resolved mesh poses update at the physics rate.")]
         [SerializeField, Range(0.1f, MaxPointCloudPublishRateHz)] private float pointCloudPublishRateHz = 10f;
-        [Tooltip("IMU messages per simulation second (0.1–500 Hz). Changes also apply during Play mode. Uses 100 ms of simulation-time delivery buffering to smooth physics-frame batches; measurement timestamps are preserved.")]
+        [Tooltip("IMU measurements per simulation second (0.1–500 Hz). Changes also apply during Play mode. Completed measurements are sent without an additional delivery buffer; timestamps are preserved.")]
         [SerializeField, Range(0.1f, MaxImuPublishRateHz)] private float imuPublishRateHz = 200f;
 
         [Header("Scene Capture")]
@@ -71,10 +70,6 @@ namespace RobotSim.Sensors
         private double _fractionalScanPoints;
         private int _nextScanPointCount;
         private volatile float _requestedImuRateHz = 200f;
-        private volatile float _requestedTimeScale = 1f;
-        private long _lastCloudPaceTicks;
-        private double _cloudPacingTimeSec;
-        private double _nextCloudPublishTimeSec;
         private readonly object _imuLock = new object();
         private readonly Mid360ImuSampler _imuSampler = new Mid360ImuSampler();
         private Vector3 _imuPreviousPosition;
@@ -82,12 +77,6 @@ namespace RobotSim.Sensors
         private double _imuPreviousTime;
         private bool _imuHavePose;
         private readonly Queue<sensor_msgs.msg.Imu> _completedImus = new Queue<sensor_msgs.msg.Imu>();
-        private double _imuPacingTimeSec;
-        private bool _imuPaceInitialized;
-        // Physics delivers IMU samples in frame-sized batches. Buffer 100 ms
-        // before sending so a short render-frame variation does not empty the
-        // output queue and overflow a subscriber with the following catch-up burst.
-        private const double ImuDeliveryBufferSec = 0.1;
         private bool _destroying;
 
         public bool UsingGpu => _temporalScene != null ? _temporalScene.UsingGpu : _sceneSampler != null && _sceneSampler.UsingGpu;
@@ -96,6 +85,15 @@ namespace RobotSim.Sensors
         public long GeneratedImuCount { get; private set; }
         public long PublishedImuCount { get; private set; }
         public double LastGeneratedImuTimeSec { get; private set; }
+        public double LastPublishedImuTimeSec { get; private set; }
+        public double LastPublishedScanEndTimeSec { get; private set; }
+        // Simulation-time age at publication, measured from the IMU sample or
+        // the final LiDAR point (not the start of its accumulation window).
+        public double LastImuDeliveryDelaySec { get; private set; }
+        public double LastScanDeliveryDelaySec { get; private set; }
+        public int PendingImuCount { get { lock (_imuLock) return _completedImus.Count; } }
+        public int PendingScanCount { get { lock (_scanLock) return _completedScans.Count; } }
+        public int PendingGpuIntervalCount => _temporalScene?.PendingCount ?? 0;
         public float PointCloudPublishRateHz => NormalizePublishRate(pointCloudPublishRateHz, 10f, MaxPointCloudPublishRateHz);
         public float ImuPublishRateHz => _requestedImuRateHz;
 
@@ -161,6 +159,8 @@ namespace RobotSim.Sensors
         private IPublisher<rosgraph_msgs.msg.Clock> _clockPub;
         private IPublisher<sensor_msgs.msg.PointCloud2> _cloudPub;
         private IPublisher<sensor_msgs.msg.Imu> _imuPub;
+        private Action<sensor_msgs.msg.Imu> _sendImu;
+        private Action<sensor_msgs.msg.PointCloud2> _sendCloud;
 
         // Ray directions in ROS base_link (X forward, Y left, Z up) and Livox frame
         private Vector3[] _rayDirBaseRos;
@@ -279,6 +279,8 @@ namespace RobotSim.Sensors
                 _clockPub = _node.CreatePublisher<rosgraph_msgs.msg.Clock>("/clock");
                 _cloudPub = _node.CreatePublisher<sensor_msgs.msg.PointCloud2>("/livox/lidar");
                 _imuPub = _node.CreatePublisher<sensor_msgs.msg.Imu>("/livox/imu");
+                _sendImu = _imuPub.Publish;
+                _sendCloud = _cloudPub.Publish;
                 if (!_executableRegistered)
                 {
                     _ros2Unity.RegisterExecutable(OnBackgroundTick);
@@ -291,7 +293,6 @@ namespace RobotSim.Sensors
         private void Update()
         {
             _requestedImuRateHz = NormalizePublishRate(imuPublishRateHz, 200f, MaxImuPublishRateHz);
-            _requestedTimeScale = Time.timeScale;
             if (_node == null) InitROS2();
         }
 
@@ -470,70 +471,55 @@ namespace RobotSim.Sensors
                 }
             }
 
-            // Readbacks deliver a batch of consecutive windows. Pace those raw
-            // messages on the executor's monotonic clock so render-frame bursts
-            // do not overrun subscribers' queues. Their ROS/sample stamps remain
-            // simulation time. The pacing clock follows timeScale and cannot run
-            // beyond physics time, including when the Editor is paused.
-            long ticks = Stopwatch.GetTimestamp();
-            double elapsed = _lastCloudPaceTicks > 0 ? (double)(ticks - _lastCloudPaceTicks) / Stopwatch.Frequency : 0;
-            _lastCloudPaceTicks = ticks;
-            float timeScale = _requestedTimeScale;
-            _cloudPacingTimeSec = Math.Min(currentSim, _cloudPacingTimeSec + elapsed * timeScale);
-            if (timeScale <= 0) return;
-            PublishReadyImus(currentSim, elapsed, timeScale);
+            PublishReadyMeasurements(currentSim, _sendImu, _sendCloud);
+        }
+
+        private void PublishReadyMeasurements(double horizon, Action<sensor_msgs.msg.Imu> sendImu,
+            Action<sensor_msgs.msg.PointCloud2> sendCloud)
+        {
+            // Match livox_ros_driver2: drain completed acquisition queues in order.
+            // Their device-rate clocks already live in the physics samplers. A
+            // second wall-time clock here permanently retains any readback/Editor
+            // stall as latency, even after the stall has ended.
+            PublishReadyImus(horizon, sendImu);
             int ready;
-            lock (_scanLock)
-            {
-                ready = _completedScans.Count;
-                // A long physics/Editor pause exhausts the buffer and lets the
-                // pacing clock catch physics. Re-anchor on the next acquisition
-                // so resuming does not permanently turn paced output into bursts.
-                if (ready == 0 && _cloudPacingTimeSec + 1e-9 >= currentSim)
-                    _nextCloudPublishTimeSec = 0;
-                if (ready > 0 && _nextCloudPublishTimeSec <= 0)
-                    _nextCloudPublishTimeSec = _cloudPacingTimeSec = _completedScans.Peek().EndTime;
-            }
+            lock (_scanLock) ready = _completedScans.Count;
             for (int i = 0; i < ready; i++)
             {
-                if (_cloudPacingTimeSec + 1e-9 < _nextCloudPublishTimeSec) break;
                 ScanFrame scan;
-                lock (_scanLock) scan = _completedScans.Dequeue();
-                PublishPointCloud(scan);
-                _nextCloudPublishTimeSec += scan.Period;
+                lock (_scanLock)
+                {
+                    if (_completedScans.Peek().EndTime > horizon + 1e-9) break;
+                    scan = _completedScans.Dequeue();
+                }
+                // A GPU result can arrive while this executor is already draining.
+                // Send available IMU coverage before each cloud as well as at entry.
+                // DDS/subscriber callback ordering across topics is not guaranteed.
+                PublishReadyImus(horizon, sendImu);
+                PublishPointCloud(scan, sendCloud);
             }
         }
 
-        private void PublishReadyImus(double currentSim, double elapsed, float timeScale)
+        private void PublishReadyImus(double horizon, Action<sensor_msgs.msg.Imu> send)
         {
-            // Main thread produces immutable measurements. The executor only paces
-            // delivery; it must never read physics state or alter acquisition stamps.
-            lock (_imuLock)
-            {
-                if (!_imuPaceInitialized && _completedImus.Count > 0)
-                {
-                    var stamp = _completedImus.Peek().Header.Stamp;
-                    _imuPacingTimeSec = stamp.Sec + stamp.Nanosec * 1e-9 - ImuDeliveryBufferSec;
-                    _imuPaceInitialized = true;
-                }
-                else _imuPacingTimeSec = Math.Min(currentSim, _imuPacingTimeSec + elapsed * timeScale);
-            }
-            while (true)
+            // Snapshot the count so a continuously advancing producer cannot hold
+            // the shared ROS executor indefinitely. Never hold a queue lock in DDS.
+            int ready;
+            lock (_imuLock) ready = _completedImus.Count;
+            for (int i = 0; i < ready; i++)
             {
                 sensor_msgs.msg.Imu sample;
+                double time;
                 lock (_imuLock)
                 {
-                    if (_completedImus.Count == 0)
-                    {
-                        if (_imuPacingTimeSec + 1e-9 >= currentSim) _imuPaceInitialized = false;
-                        break;
-                    }
                     sample = _completedImus.Peek();
-                    double time = sample.Header.Stamp.Sec + sample.Header.Stamp.Nanosec * 1e-9;
-                    if (time > _imuPacingTimeSec + 1e-9) break;
+                    time = sample.Header.Stamp.Sec + sample.Header.Stamp.Nanosec * 1e-9;
+                    if (time > horizon + 1e-9) break;
                     _completedImus.Dequeue();
                 }
-                _imuPub.Publish(sample);
+                send(sample);
+                LastPublishedImuTimeSec = time;
+                LastImuDeliveryDelaySec = Math.Max(0, CurrentSimTimeSec - time);
                 PublishedImuCount++;
             }
         }
@@ -626,11 +612,13 @@ namespace RobotSim.Sensors
             return imu;
         }
 
-        private void PublishPointCloud(ScanFrame scan)
+        private void PublishPointCloud(ScanFrame scan, Action<sensor_msgs.msg.PointCloud2> send)
         {
             var cloud = BuildRawPointCloud(scan.Returns, _rayDirLivoxRos, scan.StartIndex,
                 scan.EndTime - scan.Period, frameId, scan.ReturnOffset, scan.PointCount);
-            _cloudPub.Publish(cloud);
+            send(cloud);
+            LastPublishedScanEndTimeSec = scan.EndTime - 1.0 / PointRate;
+            LastScanDeliveryDelaySec = Math.Max(0, CurrentSimTimeSec - LastPublishedScanEndTimeSec);
             LastPublishedPointCount = (int)cloud.Width;
             PublishedScanCount++;
         }

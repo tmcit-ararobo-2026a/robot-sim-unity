@@ -532,10 +532,12 @@ namespace RobotSim.Sensors
             float inv = 1 / det;
             Vector3 delta = origin - a;
             float u = Vector3.Dot(delta, cross) * inv;
-            if (u < 0 || u > 1) return false;
+            // Same dimensionless shared-edge roundoff allowance as the GPU path.
+            const float edgeTolerance = 1e-6f;
+            if (u < -edgeTolerance || u > 1 + edgeTolerance) return false;
             Vector3 q = Vector3.Cross(delta, edge1);
             float v = Vector3.Dot(direction, q) * inv;
-            if (v < 0 || u + v > 1) return false;
+            if (v < -edgeTolerance || u + v > 1 + edgeTolerance) return false;
             distance = Vector3.Dot(edge2, q) * inv;
             return distance >= 0 && distance <= limit;
         }
