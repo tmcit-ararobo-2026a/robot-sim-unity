@@ -162,6 +162,23 @@ namespace RobotSim.Editor
             lidarSphere.GetComponent<Renderer>().sharedMaterial = lidarMat;
             Object.DestroyImmediate(lidarSphere.GetComponent<SphereCollider>());
 
+            // 7.5 Lakibeam 1 2D LiDAR Child (/World/base_link/lakibeam1)
+            // ROS base_link coordinates: x = -0.40m, y = 0.0m, z = 0.08m, yaw = 180 deg
+            GameObject lakiObj = new GameObject("Lakibeam1");
+            lakiObj.transform.SetParent(robotObj.transform, false);
+            lakiObj.transform.localPosition = new Vector3(0.0f, 0.08f, -0.40f);
+            lakiObj.transform.localRotation = Quaternion.Euler(0f, 180f, 0f);
+            lakiObj.AddComponent<Lakibeam1Sim>();
+
+            Material lakiMat = CreateMat("Mat_Lakibeam1", new Color(0.12f, 0.12f, 0.14f), 0.6f, 0.6f);
+            GameObject lakiCyl = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            lakiCyl.name = "Cylinder";
+            lakiCyl.transform.SetParent(lakiObj.transform, false);
+            lakiCyl.transform.localPosition = Vector3.zero;
+            lakiCyl.transform.localScale = new Vector3(0.08f, 0.04f, 0.08f);
+            lakiCyl.GetComponent<Renderer>().sharedMaterial = lakiMat;
+            Object.DestroyImmediate(lakiCyl.GetComponent<CapsuleCollider>());
+
             // 8. RealSense Sensor Child (Matching tracker_params.yaml: x=0.50m, z=1.00m, pitch=20deg, roll=90deg)
             GameObject rsObj = new GameObject("RealSenseD435i");
             rsObj.transform.SetParent(robotObj.transform, false);
