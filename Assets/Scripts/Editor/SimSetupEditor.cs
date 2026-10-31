@@ -163,10 +163,10 @@ namespace RobotSim.Editor
             Object.DestroyImmediate(lidarSphere.GetComponent<SphereCollider>());
 
             // 7.5 Lakibeam 1 2D LiDAR Child (/World/base_link/lakibeam1)
-            // ROS base_link coordinates: x = -0.30m, y = 0.0m, z = 0.08m, yaw = 180 deg
+            // ROS base_link coordinates: x = -0.33m, y = 0.0m, z = 0.08m, yaw = 180 deg
             GameObject lakiObj = new GameObject("Lakibeam1");
             lakiObj.transform.SetParent(robotObj.transform, false);
-            lakiObj.transform.localPosition = new Vector3(0.0f, 0.08f, -0.30f);
+            lakiObj.transform.localPosition = new Vector3(0.0f, 0.08f, -0.33f);
             lakiObj.transform.localRotation = Quaternion.Euler(0f, 180f, 0f);
             lakiObj.AddComponent<Lakibeam1Sim>();
 
