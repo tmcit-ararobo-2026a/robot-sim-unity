@@ -152,7 +152,7 @@ namespace RobotSim.Sensors
         }
 
         private static readonly object TimeLock = new object();
-        private static double _simTimeSec = 10.0;
+        private static double _simTimeSec = 0.0;
 
         private ROS2UnityComponent _ros2Unity;
         private ROS2Node _node;
@@ -168,7 +168,7 @@ namespace RobotSim.Sensors
         private int _totalRays = 0;
         private int _scanStartIndex = 0;
 
-        private double _lastStepSimSec = 10.0;
+        private double _lastStepSimSec = 0.0;
         private double _clockAccumSec;
         private bool _executableRegistered = false;
 
@@ -181,9 +181,10 @@ namespace RobotSim.Sensors
             // discarded physics time on slower render frames and lowered wall-time Hz.
             lock (TimeLock)
             {
-                _simTimeSec = 10.0;
+                // ROS and Unity elapsed time share a zero epoch at Play start.
+                _simTimeSec = 0.0;
             }
-            _lastStepSimSec = 10.0;
+            _lastStepSimSec = 0.0;
         }
 
         private void FixedUpdate()

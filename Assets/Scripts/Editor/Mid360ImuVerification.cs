@@ -16,6 +16,52 @@ namespace RobotSim.Editor
             new Mid360ImuSampler.State { Time = time, VelocityWorld = velocity, AngularVelocityWorld = omega, Rotation = rotation };
         [MenuItem("RobotSim/Verify MID360 IMU Timing")]
         public static void RunMenu() => Debug.Log(Run());
+        private static void VerifyZeroEpoch()
+        {
+            if (Application.isPlaying) throw new InvalidOperationException("Run timing verification outside Play mode");
+            var obj = new GameObject("MID360 zero epoch fixture");
+            obj.SetActive(false);
+            var type = typeof(LivoxMid360Sim);
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            var clock = type.GetField("_simTimeSec", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+            double previousTime = LivoxMid360Sim.CurrentSimTimeSec;
+            float previousStep = Time.fixedDeltaTime;
+            try
+            {
+                var sensor = obj.AddComponent<LivoxMid360Sim>();
+                // Exercise the real Play-start reset, including a previous session's clock.
+                clock.SetValue(null, 123.0);
+                type.GetMethod("Awake", flags).Invoke(sensor, null);
+                LivoxMid360Sim.GetSimTime(out int sec, out uint ns);
+                Check(sec == 0 && ns == 0, "Play start retained a previous epoch or a fixed time offset");
+                var sampler = new Mid360ImuSampler();
+                var samples = new List<Mid360ImuSampler.Sample>();
+                sampler.Capture(State(LivoxMid360Sim.CurrentSimTimeSec, Vector3.zero, Vector3.zero, Quaternion.identity),
+                    200, Vector3.zero, Vector3.zero, samples.Add);
+                type.GetMethod("FixedUpdate", flags).Invoke(sensor, null);
+                double now = LivoxMid360Sim.CurrentSimTimeSec;
+                LivoxMid360Sim.GetSimTime(out sec, out ns);
+                Check(Math.Abs(now - Time.fixedDeltaTime) < 1e-12 && sec == 0 && Math.Abs(ns * 1e-9 - 0.01) < 1e-7,
+                    "First physics step did not advance the zero-based ROS clock by 10 ms");
+                // Use an exact interval endpoint, as device-rate acquisition does.
+                sampler.Capture(State(0.01, Vector3.zero, Vector3.zero, Quaternion.identity),
+                    200, Vector3.zero, Vector3.zero, samples.Add);
+                Check(samples.Count == 2, "Zero-epoch acquisition lost the first IMU interval");
+                var imu = LivoxMid360Sim.BuildImuMessage(samples[0], "livox_frame");
+                Check(imu.Header.Stamp.Sec == 0 && imu.Header.Stamp.Nanosec == 5000000,
+                    "First IMU sample retained a ten-second offset");
+                var cloud = LivoxMid360Sim.BuildRawPointCloud(new[] { Vector2.one }, new[] { Vector3.right }, 0, 0, "livox_frame");
+                Check(cloud.Header.Stamp.Sec == 0 && cloud.Header.Stamp.Nanosec == 0 && BitConverter.ToDouble(cloud.Data, 18) == 0,
+                    "First LiDAR point did not share the zero-based clock epoch");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(obj);
+                clock.SetValue(null, previousTime);
+                Time.fixedDeltaTime = previousStep;
+            }
+        }
+
         private static void VerifyPhysicsBridge()
         {
             var obj = new GameObject("MID360 IMU physics timing fixture");
@@ -58,6 +104,7 @@ namespace RobotSim.Editor
             _report = new Report();
             try
             {
+                VerifyZeroEpoch();
                 var samples = new List<Mid360ImuSampler.Sample>();
                 var sampler = new Mid360ImuSampler();
                 sampler.Capture(State(10, Vector3.zero, Vector3.zero, Quaternion.identity), 200, Vector3.zero, Physics.gravity, samples.Add);

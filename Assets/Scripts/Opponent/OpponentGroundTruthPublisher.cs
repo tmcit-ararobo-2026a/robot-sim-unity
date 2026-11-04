@@ -1,6 +1,7 @@
 using System;
 using UnityEngine;
 using ROS2;
+using RobotSim.Sensors;
 
 namespace RobotSim.Opponent
 {
@@ -16,7 +17,7 @@ namespace RobotSim.Opponent
         private IPublisher<tf2_msgs.msg.TFMessage> _pubTf;
         private IPublisher<geometry_msgs.msg.PoseStamped> _pubPose;
 
-        private float _lastPublishTime = 0f;
+        private double _lastPublishTime;
 
         private void Start()
         {
@@ -43,9 +44,10 @@ namespace RobotSim.Opponent
 
             if (_node == null || _pubTf == null) return;
 
-            float interval = 1.0f / Mathf.Max(1.0f, publishRateHz);
-            if (Time.time - _lastPublishTime < interval) return;
-            _lastPublishTime = Time.time;
+            double now = LivoxMid360Sim.CurrentSimTimeSec;
+            double interval = 1.0 / Mathf.Max(1.0f, publishRateHz);
+            if (now - _lastPublishTime < interval) return;
+            _lastPublishTime = now;
 
             PublishGroundTruth();
         }
@@ -62,8 +64,7 @@ namespace RobotSim.Opponent
 
             Quaternion rosRot = new Quaternion(-uRot.z, uRot.x, -uRot.y, uRot.w);
 
-            int sec = (int)Time.time;
-            uint nanosec = (uint)((Time.time - sec) * 1e9);
+            LivoxMid360Sim.GetSimTime(out int sec, out uint nanosec);
 
             // 1. TF Message
             var tfMsg = new tf2_msgs.msg.TFMessage();
