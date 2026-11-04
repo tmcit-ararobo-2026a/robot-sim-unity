@@ -33,7 +33,8 @@
     "com.unity.modules.vr": "1.0.0",
     "com.unity.modules.wind": "1.0.0",
     "com.unity.modules.xr": "1.0.0",
-    "io.github.hatayama.uloopmcp": "3.19.0"
+    "io.github.hatayama.uloopmcp": "3.19.0",
+    "com.unity.pipeline": "0.10.0-exp.1"
   },
   "scopedRegistries": [
     {

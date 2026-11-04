@@ -81,6 +81,13 @@ git lfs pull
 2. Project ウィンドウから `Assets/Scenes/NHK2026_SimScene.unity` をダブルクリックして開きます。
 3. エディタ上部の **Play ボタン (▶)** を押してシミュレーションを開始します。
 
+### エージェントから操作・保守する
+
+公式 **Unity Pipeline** を導入済みです。起動中の Editor に Unity CLI で接続し、
+シーン編集、C# 実行、再コンパイル、Play Mode 操作、ログ取得ができます。
+セットアップとコマンド例は [Unity エージェント操作ガイド](docs/unity-agent.md) を参照してください。
+Codex 用のプロジェクトスキルは `.agents/skills/unity-pipeline/`、作業指示は `AGENTS.md` にあります。
+
 ---
 
 ## 4. 通信トピック仕様
