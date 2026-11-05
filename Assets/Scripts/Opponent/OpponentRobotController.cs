@@ -84,6 +84,22 @@ namespace RobotSim.Opponent
         [SerializeField] private bool enableRosTeleop = false;
         [SerializeField] private string cmdVelTopic = "/opponent/cmd_vel";
 
+        [Header("Moving Bucket")]
+        [Tooltip("Allow vertical bucket travel during the match. Turning this off holds its current height.")]
+        [SerializeField] private bool enableBucketLift;
+        [SerializeField] private bool cycleBucketLift = true;
+        [Tooltip("Rim height above the competition floor in metres. Used when Cycle Bucket Lift is off.")]
+        [SerializeField, Range(OpponentBucketLift.LowRimHeight, OpponentBucketLift.HighRimHeight)]
+        private float targetBucketRimHeight = 1.8f;
+
+        public bool BucketLiftEnabled
+        {
+            get => enableBucketLift;
+            set => enableBucketLift = value;
+        }
+        internal bool CycleBucketLift => cycleBucketLift;
+        internal float TargetBucketRimHeight => targetBucketRimHeight;
+
         public OpponentState CurrentState { get; private set; } = OpponentState.Patrol;
         public FieldSide AssignedSide => fieldSide;
         public Vector3 CurrentVelocity { get; private set; } = Vector3.zero;
@@ -151,6 +167,8 @@ namespace RobotSim.Opponent
             _rb.useGravity = false;
             _rb.isKinematic = true;
             _rb.constraints = RigidbodyConstraints.FreezeRotationX | RigidbodyConstraints.FreezeRotationZ;
+            if (!TryGetComponent<OpponentBucketLift>(out _))
+                gameObject.AddComponent<OpponentBucketLift>();
 
             InitSideData();
         }

@@ -10222,6 +10222,10 @@ PrefabInstance:
       propertyPath: m_LocalEulerAnglesHint.z
       value: 0
       objectReference: {fileID: 0}
+    - target: {fileID: 6081467734422423649, guid: 15d58a03e8ff6b632bed52400544ab5f, type: 3}
+      propertyPath: enableBucketLift
+      value: 1
+      objectReference: {fileID: 0}
     - target: {fileID: 7698011186978048213, guid: 15d58a03e8ff6b632bed52400544ab5f, type: 3}
       propertyPath: m_Name
       value: OpponentRobot_blue
