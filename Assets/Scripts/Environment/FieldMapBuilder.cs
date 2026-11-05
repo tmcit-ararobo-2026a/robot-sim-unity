@@ -46,6 +46,8 @@ namespace RobotSim.Environment
     [ExecuteInEditMode]
     public class FieldMapBuilder : MonoBehaviour
     {
+        [SerializeField] private GameObject bucketPrefab;
+
         [Header("Movable Field Props (kg; desk/chair/platform/flag are estimates)")]
         [SerializeField] private bool simulateLooseProps = true;
         [SerializeField, Min(0.01f)] private float deskMass = 8f;
@@ -115,17 +117,7 @@ namespace RobotSim.Environment
                 indexFormat = IndexFormat.UInt32
             };
 
-            int vCount = entry.vertexCount;
-            float[] rawFloats = new float[vCount * 3];
-            Buffer.BlockCopy(binData, entry.vertexByteOffset, rawFloats, 0, vCount * 12);
-
-            Vector3[] vertices = new Vector3[vCount];
-            for (int i = 0; i < vCount; i++)
-            {
-                int baseIdx = i * 3;
-                vertices[i] = new Vector3(rawFloats[baseIdx], rawFloats[baseIdx + 1], rawFloats[baseIdx + 2]);
-            }
-            mesh.vertices = vertices;
+            mesh.vertices = ReadVertices(entry, binData);
 
             int subCount = entry.submeshes != null ? entry.submeshes.Length : 0;
             mesh.subMeshCount = subCount;
@@ -150,12 +142,43 @@ namespace RobotSim.Environment
             return mesh;
         }
 
+        private static Vector3[] ReadVertices(IsaacMeshEntry entry, byte[] binData)
+        {
+            var raw = new float[entry.vertexCount * 3];
+            Buffer.BlockCopy(binData, entry.vertexByteOffset, raw, 0, raw.Length * sizeof(float));
+            var vertices = new Vector3[entry.vertexCount];
+            for (int i = 0; i < vertices.Length; i++)
+                vertices[i] = new Vector3(raw[i * 3], raw[i * 3 + 1], raw[i * 3 + 2]);
+            return vertices;
+        }
+
+        private void BuildFixedBucket(IsaacMeshEntry entry, byte[] binData)
+        {
+            Vector3[] vertices = ReadVertices(entry, binData);
+            var bounds = new Bounds(vertices[0], Vector3.zero);
+            foreach (var vertex in vertices) bounds.Encapsulate(vertex);
+            var bucket = BucketPrefab.Instantiate(transform, bucketPrefab);
+            bucket.name = BucketPrefab.FixedPrefix + entry.name.Substring("bucket".Length);
+            var mesh = bucket.GetComponent<MeshFilter>().sharedMesh;
+            bucket.transform.localPosition = bounds.center - mesh.bounds.center;
+            bucket.AddComponent<MeshCollider>().sharedMesh = mesh;
+        }
+
         public void BuildField()
         {
             IsaacSceneMeta meta = LoadSceneMeta(out byte[] binData);
             if (meta == null || binData == null)
             {
                 Debug.LogError("[FieldMapBuilder] Failed to load isaac_scene_meta.json or isaac_meshes.bin");
+                return;
+            }
+
+#if UNITY_EDITOR
+            if (bucketPrefab == null) Reset();
+#endif
+            if (bucketPrefab == null)
+            {
+                Debug.LogError("[FieldMapBuilder] Assign the competition bucket prefab before rebuilding the field.", this);
                 return;
             }
 
@@ -169,6 +192,12 @@ namespace RobotSim.Environment
             foreach (IsaacMeshEntry entry in meta.meshes)
             {
                 if (entry.category != "field") continue;
+                if (entry.name.StartsWith("bucket", StringComparison.Ordinal) && !entry.name.Contains("platform"))
+                {
+                    BuildFixedBucket(entry, binData);
+                    fieldCount++;
+                    continue;
+                }
 
                 Mesh mesh = BuildUnityMesh(entry, binData, out Material[] mats);
                 GameObject obj = new GameObject(entry.name);
@@ -194,6 +223,10 @@ namespace RobotSim.Environment
             Debug.Log($"[FieldMapBuilder] Constructed {fieldCount} exact Isaac Sim field meshes from main.usd!");
             if (Application.isPlaying) ConfigureRuntimePhysics();
         }
+
+#if UNITY_EDITOR
+        private void Reset() => bucketPrefab = BucketPrefab.LoadEditorAsset();
+#endif
 
         private void ConfigureRuntimePhysics()
         {
@@ -252,7 +285,7 @@ namespace RobotSim.Environment
                 {
                     if (prop.name.StartsWith("bucket", StringComparison.Ordinal) && !prop.name.Contains("platform"))
                         mass += fixedBucketBallastMass;
-                    FieldPropPhysics.MakeMovable(prop, mass);
+                    FieldPropPhysics.MakeMovable(prop, mass, prop.name.StartsWith(BucketPrefab.FixedPrefix, StringComparison.Ordinal));
                 }
             }
         }

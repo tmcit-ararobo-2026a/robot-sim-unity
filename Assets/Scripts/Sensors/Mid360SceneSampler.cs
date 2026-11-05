@@ -251,10 +251,21 @@ namespace RobotSim.Sensors
                 float reflectivity = 0f;
                 for (int h = 0; h < hits; h++)
                 {
-                    if (_cpuHits[h].distance >= nearest) continue;
-                    nearest = _cpuHits[h].distance;
-                    var surface = _cpuHits[h].collider.GetComponent<Mid360Surface>();
-                    reflectivity = surface != null && surface.isActiveAndEnabled ? surface.reflectivity : 0f;
+                    RaycastHit hit = _cpuHits[h];
+                    if (hit.distance >= nearest) continue;
+                    var surface = hit.collider.GetComponentInParent<Mid360Surface>();
+                    bool hasSurface = surface != null && surface.isActiveAndEnabled;
+                    if (hasSurface && surface.transmission > 0)
+                    {
+                        float incidence = Mathf.Clamp01(Mathf.Abs(Vector3.Dot(hit.normal, directions[i])));
+                        float probability = Mid360Surface.TransparentReturnProbability(Mathf.Clamp01(surface.transmission),
+                            Mathf.Clamp01(surface.backscatter), Mathf.Clamp(surface.reflectivity, 0, 255),
+                            incidence, hit.distance, LivoxMid360Sim.TenPercentRangeMeters);
+                        if (!Mid360Surface.AcceptReturn(probability, directions[i], 0))
+                            continue;
+                    }
+                    nearest = hit.distance;
+                    reflectivity = hasSurface ? Mathf.Clamp(surface.reflectivity, 0, 255) : 0f;
                 }
                 ranges[i] = nearest >= minRange && nearest <= maxRange ? new Vector2(nearest, reflectivity) : new Vector2(-1, 0);
             }

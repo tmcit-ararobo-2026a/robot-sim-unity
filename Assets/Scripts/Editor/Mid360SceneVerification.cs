@@ -254,6 +254,7 @@ namespace RobotSim.Editor
                 type.GetField("_temporalScene", flags).SetValue(sensor, new Mid360TemporalScene(false, 1 << 31));
                 type.GetField("_rayDirBaseRos", flags).SetValue(sensor,
                     new[] { Vector3.right, Vector3.right, Vector3.right, Vector3.right });
+                type.GetField("_referenceRanges", flags).SetValue(sensor, new[] { 40f, 40f, 40f, 40f });
                 type.GetField("_totalRays", flags).SetValue(sensor, 4);
                 var capture = type.GetMethod("CaptureTemporalInterval", flags);
                 capture.Invoke(sensor, new object[] { 10.0 });

@@ -79,7 +79,7 @@ namespace RobotSim.Environment
         {
             var chair = opponent.Find("Classroom_Chair_JIS6");
             if (chair != null) SplitChairFeet(chair);
-            var bucket = opponent.Find("Opponent_Moving_Bucket");
+            var bucket = BucketPrefab.FindMoving(opponent);
             foreach (var collider in opponent.GetComponentsInChildren<Collider>(true))
             {
                 if (!collider.enabled || collider.isTrigger) continue;

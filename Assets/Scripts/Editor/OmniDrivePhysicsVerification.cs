@@ -384,7 +384,7 @@ namespace RobotSim.Editor
 
         private static void VerifyFieldProps()
         {
-            string[] names = { "desk1_red", "chair_red", "bucket1_red", "flag_red" };
+            string[] names = { "desk1_red", "chair_red", "bucket_fixed_1_red", "flag_red" };
             float[] masses = { 8f, 5f, 0.6f, 10f };
             for (int i = 0; i < names.Length; i++)
             {
@@ -433,7 +433,7 @@ namespace RobotSim.Editor
         private static void VerifyBucketPlatforms()
         {
             string[] platforms = { "bucket2_platform_red", "bucket2_platform_blue", "bucket3_platform_red", "bucket3_platform" };
-            string[] buckets = { "bucket2_red", "bucket2_blue", "bucket3_red", "bucket3_blue" };
+            string[] buckets = { "bucket_fixed_2_red", "bucket_fixed_2_blue", "bucket_fixed_3_red", "bucket_fixed_3_blue" };
             for (int i = 0; i < platforms.Length; i++)
             {
                 Mesh platformMesh = GameObject.Find(platforms[i]).GetComponentInChildren<MeshFilter>().sharedMesh;

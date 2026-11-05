@@ -14,6 +14,8 @@ namespace RobotSim.Sensors
         // IMU publication rates can be overridden independently in the Inspector.
         public const float MinRange = 0.1f;
         public const float MaxRange = 100f;
+        public const float TenPercentRangeMeters = 40f;
+        public const int LaserWavelengthNm = 905;
         public const int PointRate = 200000;
         public const int PointsPerScan = 20000;
         public const double ScanPeriod = 0.1;
@@ -165,6 +167,7 @@ namespace RobotSim.Sensors
         // Ray directions in ROS base_link (X forward, Y left, Z up) and Livox frame
         private Vector3[] _rayDirBaseRos;
         private Vector3[] _rayDirLivoxRos;
+        private float[] _referenceRanges;
         private int _totalRays = 0;
         private int _scanStartIndex = 0;
 
@@ -247,6 +250,7 @@ namespace RobotSim.Sensors
             _totalRays = bytes.Length / (sizeof(float) * 2);
             _rayDirBaseRos = new Vector3[_totalRays];
             _rayDirLivoxRos = new Vector3[_totalRays];
+            _referenceRanges = new float[_totalRays];
 
             using (BinaryReader reader = new BinaryReader(new MemoryStream(bytes)))
             {
@@ -266,6 +270,7 @@ namespace RobotSim.Sensors
                     Vector3 dLivox = new Vector3(rx, ry, rz).normalized;
                     _rayDirLivoxRos[i] = dLivox;
                     _rayDirBaseRos[i] = RotateLivoxToBase(dLivox.x, dLivox.y, dLivox.z);
+                    _referenceRanges[i] = ReferenceRangeAtTenPercent(elevation * Mathf.Rad2Deg);
                 }
             }
             Debug.Log($"[LivoxMid360Sim] Loaded {_totalRays} ray directions from mid360_pattern.bin");
@@ -353,6 +358,13 @@ namespace RobotSim.Sensors
             bool accepted = _sceneSampler.TryScan(origin, _worldDirections, MinRange, MaxRange, ~0, returns =>
             {
                 if (_destroying) return;
+                int firstRay = scans[0].StartIndex;
+                for (int i = 0; i < returns.Length; i++)
+                {
+                    float referenceRange = _referenceRanges[(firstRay + i) % _totalRays];
+                    if (!Mid360Surface.WithinDetectionRange(returns[i].x, returns[i].y, referenceRange))
+                        returns[i] = new Vector2(-1, 0);
+                }
                 // Share the immutable readback array. Partition by exact sample
                 // offsets, without copies, discarded returns or repeated clouds.
                 lock (_scanLock)
@@ -396,7 +408,7 @@ namespace RobotSim.Sensors
                     rays.Add(new Mid360TemporalScene.TimedRay
                     {
                         Origin = new Vector4(origin.x, origin.y, origin.z, fraction),
-                        Direction = new Vector4(direction.x, direction.y, direction.z, 0)
+                        Direction = new Vector4(direction.x, direction.y, direction.z, _referenceRanges[_scanStartIndex])
                     });
                     _sampleNumber++;
                     _scanStartIndex = (_scanStartIndex + 1) % _totalRays;
@@ -412,6 +424,11 @@ namespace RobotSim.Sensors
             _previousBaseRotation = rotation;
             _previousCaptureTime = now;
         }
+
+        // Mid-360S User Manual §2.1, 10% at 100 klx. Approximate the published
+        // FOV range diagram by interpolating from its lower to upper edge.
+        public static float ReferenceRangeAtTenPercent(float elevationDegrees) =>
+            Mathf.Lerp(TenPercentRangeMeters, 35f, Mathf.InverseLerp(-7f, 52f, elevationDegrees));
 
         private void AppendTemporalSamples(Vector2[] returns, int firstPattern, double firstTime, float rate)
         {

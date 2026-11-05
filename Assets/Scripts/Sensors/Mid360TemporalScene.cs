@@ -11,6 +11,8 @@ namespace RobotSim.Sensors
     public sealed class Mid360TemporalScene : IDisposable
     {
         // float4-only GPU records keep the same layout on OpenGL, Vulkan and DX.
+        // Origin.w is the physics-interval fraction. Direction.w is the 10%
+        // reflectivity reference range (zero for geometric-only diagnostic rays).
         public struct TimedRay { public Vector4 Origin, Direction; }
         private struct Node { public Vector4 Min, Max, Links; }
         private struct Triangle { public Vector4 A, B, C, PreviousA, PreviousB, PreviousC; }
@@ -145,12 +147,14 @@ namespace RobotSim.Sensors
                 }
                 if (geometry.Triangles.Length == 0) continue;
                 var material = renderer.GetComponent<Mid360Surface>();
-                float reflectivity = material != null && material.isActiveAndEnabled ? material.reflectivity : 0;
+                bool hasSurface = material != null && material.isActiveAndEnabled;
                 var instance = new Instance
                 {
-                    PreviousPosition = V(previous.Position, reflectivity), Position = V(position, 0),
+                    PreviousPosition = V(previous.Position, hasSurface ? Mathf.Clamp(material.reflectivity, 0, 255) : 0),
+                    Position = V(position, 0),
                     PreviousRotation = Q(previous.Rotation), Rotation = Q(rotation),
-                    PreviousScale = V(previous.Scale, 0), Scale = V(scale, 0)
+                    PreviousScale = V(previous.Scale, hasSurface ? Mathf.Clamp01(material.transmission) : 0),
+                    Scale = V(scale, hasSurface ? Mathf.Clamp01(material.backscatter) : 0)
                 };
                 Bounds bounds;
                 if (Quaternion.Angle(previous.Rotation, rotation) < 0.00001f && previous.Scale == scale)
@@ -497,6 +501,20 @@ namespace RobotSim.Sensors
                             Vector3 b = Vector3.Lerp(triangle.PreviousB, triangle.B, fraction);
                             Vector3 c = Vector3.Lerp(triangle.PreviousC, triangle.C, fraction);
                             if (!HitTriangle(o, d, a, b, c, nearest, out float distance)) continue;
+                            float transmission = instance.PreviousScale.w;
+                            if (transmission > 0)
+                            {
+                                if (!Mid360Surface.WithinDetectionRange(distance, instance.PreviousPosition.w, ray.Direction.w))
+                                    continue;
+                                // Inverse transpose handles non-uniform instance scaling.
+                                Vector3 normal = Vector3.Cross(b - a, c - a);
+                                normal = new Vector3(normal.x / scale.x, normal.y / scale.y, normal.z / scale.z);
+                                float incidence = Mathf.Clamp01(Mathf.Abs(Vector3.Dot(normal.normalized, inverse * direction)));
+                                float probability = Mid360Surface.TransparentReturnProbability(transmission,
+                                    instance.Scale.w, instance.PreviousPosition.w, incidence, distance, ray.Direction.w);
+                                if (!Mid360Surface.AcceptReturn(probability, direction, ray.Origin.w))
+                                    continue;
+                            }
                             nearest = distance; reflectivity = instance.PreviousPosition.w; found = true;
                         }
                         m = (int)meshNode.Links.x;
@@ -504,8 +522,10 @@ namespace RobotSim.Sensors
                 }
                 n = (int)node.Links.x;
             }
-            return found && nearest >= min ? new Vector2(nearest, reflectivity) : new Vector2(-1, 0);
+            return found && nearest >= min && Mid360Surface.WithinDetectionRange(nearest, reflectivity, ray.Direction.w)
+                ? new Vector2(nearest, reflectivity) : new Vector2(-1, 0);
         }
+
         private static bool Intersects(Node node, Vector3 origin, Vector3 direction, float limit)
         {
             float low = 0, high = limit;

@@ -4,7 +4,9 @@ using System.Diagnostics;
 using System.IO;
 using RobotSim.Sensors;
 using UnityEditor;
+using UnityEditor.SceneManagement;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
 namespace RobotSim.Editor
 {
@@ -48,8 +50,13 @@ namespace RobotSim.Editor
             var objects = new List<GameObject>();
             var meshes = new List<Mesh>();
             var origin = new Vector3(100, 200, 300);
+            Scene previous = SceneManager.GetActiveScene();
+            Scene fixture = default;
             try
             {
+                // Keep test objects out of the user's scene and its Play Mode snapshot.
+                fixture = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Additive);
+                SceneManager.SetActiveScene(fixture);
                 using var scene = new Mid360TemporalScene(true, 1 << 31);
                 Check(scene.UsingGpu, "Mesh GPU path is required for this regression");
                 // Empty scenes must work without unbound buffers or undefined reads.
@@ -85,6 +92,7 @@ namespace RobotSim.Editor
                 });
                 _report.submit20000Ms = watch.Elapsed.TotalMilliseconds;
                 scene.WaitForPending();
+                CheckTransparentReturns(scene, origin + Vector3.up * 100, objects);
                 // Different snapshots remain independent while multiple dispatches are in flight.
                 int callbacks = 0;
                 for (int step = 1; step <= 4; step++)
@@ -190,12 +198,95 @@ namespace RobotSim.Editor
             {
                 foreach (var obj in objects) if (obj != null) UnityEngine.Object.DestroyImmediate(obj);
                 foreach (var mesh in meshes) if (mesh != null) UnityEngine.Object.DestroyImmediate(mesh);
+                if (fixture.IsValid())
+                {
+                    SceneManager.SetActiveScene(previous);
+                    EditorSceneManager.CloseScene(fixture, true);
+                }
             }
             Directory.CreateDirectory("Temp");
             string json = JsonUtility.ToJson(_report, true);
             File.WriteAllText("Temp/Mid360MeshVerification.json", json);
             if (!_report.passed) throw new InvalidOperationException(json);
             return json;
+        }
+
+        private static void CheckTransparentReturns(Mid360TemporalScene scene, Vector3 origin, List<GameObject> objects)
+        {
+            var wall = Box("MID360 optical background", origin + Vector3.forward * 38, new Vector3(5, 5, 0.2f));
+            objects.Add(wall);
+            wall.AddComponent<Mid360Surface>().reflectivity = 15;
+            var shell = Box("MID360 clear shell", origin + Vector3.forward * 3, new Vector3(4, 4, 0.02f));
+            objects.Add(shell);
+            var opticalSurface = shell.AddComponent<Mid360Surface>();
+            opticalSurface.reflectivity = 6;
+            opticalSurface.transmission = 0.9f;
+            scene.Capture();
+            scene.Capture();
+
+            float lowerRange = LivoxMid360Sim.ReferenceRangeAtTenPercent(-7);
+            float upperRange = LivoxMid360Sim.ReferenceRangeAtTenPercent(52);
+            var rays = new Mid360TemporalScene.TimedRay[1024];
+            for (int i = 0; i < rays.Length; i++)
+            {
+                rays[i] = Ray(origin, Vector3.forward, (float)i / rays.Length);
+                rays[i].Direction.w = i % 2 == 0 ? lowerRange : upperRange;
+            }
+
+            var expected = new Vector2[rays.Length];
+            using var cpu = new Mid360TemporalScene(false, 1 << 31);
+            cpu.Capture();
+            cpu.Submit(rays, 0.1f, 100, result => Array.Copy(result, expected, result.Length));
+            int weakReturns = 0, backgroundReturns = 0, misses = 0;
+            for (int i = 0; i < expected.Length; i++)
+            {
+                Vector2 hit = expected[i];
+                if (hit.y == 6 && Mathf.Abs(hit.x - 2.99f) < 0.002f) weakReturns++;
+                else if (i % 2 == 0 && hit.y == 15 && Mathf.Abs(hit.x - 37.9f) < 0.002f) backgroundReturns++;
+                else if (i % 2 == 1 && hit.x < 0 && hit.y == 0) misses++;
+            }
+            Check(weakReturns > 60 && weakReturns < 150, "Transparent surface should return a minority of head-on rays");
+            Check(weakReturns + backgroundReturns + misses == rays.Length && backgroundReturns > 400 && misses > 400,
+                "Transmitted rays must reach the background within the elevation-dependent detection range");
+
+            scene.Submit(rays, 0.1f, 100, result =>
+            {
+                for (int i = 0; i < result.Length; i++)
+                    Check(Mathf.Abs(result[i].x - expected[i].x) < 0.002f && result[i].y == expected[i].y,
+                        "CPU/GPU optical returns differ at " + i);
+            });
+            scene.WaitForPending();
+
+            // Use the same hash phase across the three groups so distance and
+            // incidence are the only changes in the head-on versus oblique test.
+            opticalSurface.reflectivity = 7;
+            opticalSurface.backscatter = 0.02f;
+            var oblique = new Vector3(Mathf.Sqrt(0.75f), 0, 0.5f);
+            for (int i = 0; i < 256; i++)
+            {
+                float phase = i / 256f;
+                rays[i] = Ray(origin, Vector3.forward, phase);
+                rays[i + 256] = Ray(origin - Vector3.forward * 5, Vector3.forward, phase);
+                rays[i + 512] = Ray(shell.transform.position - oblique * 3, oblique, phase);
+            }
+            Array.Resize(ref rays, 768);
+            cpu.Capture();
+            scene.Capture();
+            cpu.Submit(rays, 0.1f, 100, result => expected = result);
+            scene.Submit(rays, 0.1f, 100, result =>
+            {
+                var counts = new int[3];
+                for (int i = 0; i < result.Length; i++)
+                {
+                    Check(Mathf.Abs(result[i].x - expected[i].x) < 0.002f && result[i].y == expected[i].y,
+                        "CPU/GPU coupled returns differ at " + i);
+                    if (result[i].y == 7) counts[i / 256]++;
+                }
+                Check(counts[0] > 128 && counts[0] < 230 && counts[1] > 15 && counts[2] > 15 &&
+                    counts[1] < counts[0] && counts[2] < counts[0],
+                    "Weak returns must thin with distance and oblique incidence while preserving transmission.");
+            });
+            scene.WaitForPending();
         }
 
         private static Mesh FrameMesh()

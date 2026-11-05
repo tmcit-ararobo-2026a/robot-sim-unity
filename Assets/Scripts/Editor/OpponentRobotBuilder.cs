@@ -106,9 +106,6 @@ namespace RobotSim.Editor
                 ? CreateMat("Mat_Opp_MascotBlue", new Color(0.12f, 0.42f, 0.95f, 1f), 0.1f, 0.45f)
                 : CreateMat("Mat_Opp_MascotRed", new Color(0.92f, 0.18f, 0.12f, 1f), 0.1f, 0.45f);
             Material mascotWhiteMat = CreateMat("Mat_Opp_MascotWhite", new Color(0.95f, 0.95f, 0.97f, 1f), 0.1f, 0.45f);
-            Material bucketPolyMat = (side == FieldSide.BlueZone)
-                ? CreateTransparentMat("Mat_Opp_PolyBucket", new Color(0.86f, 0.94f, 1.0f, 0.42f))
-                : CreateTransparentMat("Mat_Opp_PolyBucket_Red", new Color(1.00f, 0.88f, 0.88f, 0.42f));
 
             // 2. オムニホイールベース車体 (880mm x 880mm x 260mm) - ルール3.2.2準拠
             BuildDetailedOmniChassis(robot.transform, aluMat, darkFrameMat, armorMat, wheelRubberMat, airTankMat, yellowBaseMat, redBtnMat, ledMat);
@@ -124,7 +121,7 @@ namespace RobotSim.Editor
             BuildDetailedMascot(robot.transform, mascotSkinMat, mascotUniformMat, mascotWhiteMat, darkFrameMat, redBtnMat);
 
             // 6. ツインアルミ支柱 & 移動バケツ (PO-24A実寸CADメッシュ, 上面高さ1.80m, 中空コライダー構造) - ルール3.2.3 / 5.3準拠
-            BuildMovingBucketAssembly(robot.transform, side, meta, binData, aluMat, redBtnMat, bucketPolyMat);
+            BuildMovingBucketAssembly(robot.transform, aluMat);
 
             CompetitionPhysicsSetup.EnsureMaterials();
             CompetitionPhysics.ApplyOpponent(robot.transform);
@@ -352,12 +349,7 @@ namespace RobotSim.Editor
 
         private static void BuildMovingBucketAssembly(
             Transform root,
-            FieldSide side,
-            IsaacSceneMeta meta,
-            byte[] binData,
-            Material aluMat,
-            Material redLineMat,
-            Material bucketPolyMat)
+            Material aluMat)
         {
             // ルール3.2.3:
             // a) バケツは開口部を上方向に向け、競技中は常に水平を維持できるよう固定。
@@ -382,49 +374,10 @@ namespace RobotSim.Editor
             CreateCylinder(tower.transform, "Bucket_Base_MountPlate", new Vector3(0f, BucketBottomY, BucketPosZ), new Vector3(0.22f, 0.01f, 0.22f), aluMat, false);
 
             // 移動バケツ本体 (PO-24A 実寸CADメッシュ)
-            GameObject bucketObj = new GameObject("Opponent_Moving_Bucket");
-            bucketObj.transform.SetParent(root, false);
+            GameObject bucketObj = BucketPrefab.Instantiate(root, BucketPrefab.LoadEditorAsset());
+            bucketObj.name = BucketPrefab.MovingName;
             // GroundTruthPublisher や GoalDetector が上面中心を基準にできるよう、バケツ中心 (y = 1.6725m) に配置
             bucketObj.transform.localPosition = new Vector3(0f, BucketBottomY + BucketHeight * 0.5f, BucketPosZ);
-
-            bool loadedBucketCad = false;
-            if (meta != null && binData != null && meta.meshes != null)
-            {
-                string targetMeshName = (side == FieldSide.BlueZone) ? "bucket1_blue" : "bucket1_red";
-                string cadName = (side == FieldSide.BlueZone) ? "PO24A_Bucket_CAD_Blue" : "PO24A_Bucket_CAD_Red";
-                IsaacMeshEntry selectedEntry = null;
-                foreach (var entry in meta.meshes)
-                {
-                    if (entry.name == targetMeshName)
-                    {
-                        selectedEntry = entry;
-                        break;
-                    }
-                    if (selectedEntry == null && entry.name == "bucket1_blue")
-                    {
-                        selectedEntry = entry;
-                    }
-                }
-
-                if (selectedEntry != null)
-                {
-                    Mesh rawBucket = FieldMapBuilder.BuildUnityMesh(selectedEntry, binData, out _);
-                    Mesh centeredBucket = RecenterMeshCenter(rawBucket, cadName);
-                    MeshFilter mf = bucketObj.AddComponent<MeshFilter>();
-                    mf.sharedMesh = centeredBucket;
-                    MeshRenderer mr = bucketObj.AddComponent<MeshRenderer>();
-                    mr.sharedMaterial = bucketPolyMat;
-                    loadedBucketCad = true;
-                }
-            }
-
-            if (!loadedBucketCad)
-            {
-                GameObject cyl = CreateCylinder(bucketObj.transform, "Bucket_Visual_Fallback", Vector3.zero, new Vector3(BucketRadius * 2f, BucketHeight * 0.5f, BucketRadius * 2f), bucketPolyMat, false);
-            }
-
-            // 2L目盛りリング表示 (底面から50mm位置 = local y = -0.1275 + 0.05 = -0.0775m)
-            CreateCylinder(bucketObj.transform, "Bucket_2L_LimitLine", new Vector3(0f, -0.0775f, 0f), new Vector3(0.252f, 0.004f, 0.252f), redLineMat, false);
 
             // 中空バケツコライダー構造 (底面コライダー + 8枚の側壁コライダーリング: 外からはLiDARが当たり、上からは雑巾が入る)
             BoxCollider bottomCol = bucketObj.AddComponent<BoxCollider>();
@@ -484,30 +437,6 @@ namespace RobotSim.Editor
             m.name = newName;
             Bounds b = m.bounds;
             Vector3 offset = new Vector3(b.center.x, b.min.y, b.center.z);
-            Vector3[] verts = m.vertices;
-            for (int i = 0; i < verts.Length; i++)
-            {
-                verts[i] -= offset;
-            }
-            m.vertices = verts;
-            m.RecalculateBounds();
-            AssetDatabase.CreateAsset(m, assetPath);
-            return m;
-        }
-
-        private static Mesh RecenterMeshCenter(Mesh src, string newName)
-        {
-            EnsureAssetFolder();
-            string assetPath = $"{AssetFolder}/{newName}.asset";
-            Mesh existing = AssetDatabase.LoadAssetAtPath<Mesh>(assetPath);
-            if (existing != null)
-            {
-                return existing;
-            }
-            Mesh m = UnityEngine.Object.Instantiate(src);
-            m.name = newName;
-            Bounds b = m.bounds;
-            Vector3 offset = b.center;
             Vector3[] verts = m.vertices;
             for (int i = 0; i < verts.Length; i++)
             {
@@ -594,32 +523,5 @@ namespace RobotSim.Editor
             return mat;
         }
 
-        private static Material CreateTransparentMat(string name, Color color)
-        {
-            EnsureAssetFolder();
-            string assetPath = $"{AssetFolder}/{name}.mat";
-            Material existing = AssetDatabase.LoadAssetAtPath<Material>(assetPath);
-            if (existing != null)
-            {
-                existing.color = color;
-                EditorUtility.SetDirty(existing);
-                return existing;
-            }
-            Shader shader = Shader.Find("Standard") ?? Shader.Find("Universal Render Pipeline/Lit");
-            Material mat = new Material(shader) { name = name, color = color };
-            if (mat.HasProperty("_Mode"))
-            {
-                mat.SetFloat("_Mode", 3f);
-                mat.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
-                mat.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
-                mat.SetInt("_ZWrite", 0);
-                mat.DisableKeyword("_ALPHATEST_ON");
-                mat.EnableKeyword("_ALPHABLEND_ON");
-                mat.DisableKeyword("_ALPHAPREMULTIPLY_ON");
-                mat.renderQueue = 3000;
-            }
-            AssetDatabase.CreateAsset(mat, assetPath);
-            return mat;
-        }
     }
 }

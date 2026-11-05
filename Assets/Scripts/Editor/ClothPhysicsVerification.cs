@@ -3,6 +3,7 @@ using UnityEditor;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 using RobotSim.Control;
+using RobotSim.Environment;
 using RobotSim.Shooter;
 
 namespace RobotSim.Editor
@@ -22,8 +23,8 @@ namespace RobotSim.Editor
             var player = UnityEngine.Object.FindFirstObjectByType<KinematicOmniDrive>();
             var field = GameObject.Find("Field");
             var desk = field.transform.Find("desk1_red").gameObject;
-            var fieldBucket = field.transform.Find("bucket1_red").gameObject;
-            var movingBucket = GameObject.Find("Opponent_Moving_Bucket");
+            var fieldBucket = field.transform.Find("bucket_fixed_1_red").gameObject;
+            var movingBucket = GameObject.Find(BucketPrefab.MovingName) ?? GameObject.Find(BucketPrefab.LegacyMovingName);
             Require(movingBucket != null, "Opponent bucket is missing.");
             var report = new System.Collections.Generic.List<string>();
             try

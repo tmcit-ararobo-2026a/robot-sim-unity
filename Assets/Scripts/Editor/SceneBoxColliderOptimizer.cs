@@ -151,7 +151,7 @@ namespace RobotSim.Editor
                 var piece = tower.Find(name);
                 Box(piece, MeshBounds(piece, piece));
             }
-            var bucket = root.Find("Opponent_Moving_Bucket").GetComponent<MeshFilter>();
+            var bucket = BucketPrefab.FindMoving(root).GetComponent<MeshFilter>();
             if (!CompactBoxColliders.TryBuild(bucket.gameObject, bucket.sharedMesh))
                 throw new InvalidOperationException("Missing opponent bucket collision layout.");
         }

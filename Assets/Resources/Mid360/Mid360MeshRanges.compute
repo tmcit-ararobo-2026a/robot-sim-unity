@@ -1,5 +1,6 @@
 #pragma kernel SampleMeshRanges
 #pragma target 5.0
+#include "Mid360Optics.hlsl"
 
 struct Node { float4 boundsMin; float4 boundsMax; float4 links; };
 struct Triangle { float4 a; float4 b; float4 c; float4 previousA; float4 previousB; float4 previousC; };
@@ -66,6 +67,13 @@ bool TriangleHit(float3 origin, float3 direction, float3 a, float3 b, float3 c, 
     return abs(det) >= 1e-9 && u >= -edgeTolerance && u <= 1 + edgeTolerance &&
         v >= -edgeTolerance && u+v <= 1 + edgeTolerance && distance >= 0 && distance <= limit;
 }
+
+bool WithinDetectionRange(float distance, float reflectivity, float referenceRange)
+{
+    return reflectivity == 0 || referenceRange <= 0 ||
+        distance * distance <= referenceRange * referenceRange * min(reflectivity, 150) / 15;
+}
+
 [numthreads(64,1,1)]
 void SampleMeshRanges(uint3 id : SV_DispatchThreadID)
 {
@@ -101,16 +109,27 @@ void SampleMeshRanges(uint3 id : SV_DispatchThreadID)
                 {
                     Triangle tri = _Triangles[t];
                     float distance;
-                    if (TriangleHit(origin, direction, lerp(tri.previousA.xyz,tri.a.xyz,fraction),
-                        lerp(tri.previousB.xyz,tri.b.xyz,fraction), lerp(tri.previousC.xyz,tri.c.xyz,fraction), nearest, distance))
+                    float3 a = lerp(tri.previousA.xyz, tri.a.xyz, fraction);
+                    float3 b = lerp(tri.previousB.xyz, tri.b.xyz, fraction);
+                    float3 c = lerp(tri.previousC.xyz, tri.c.xyz, fraction);
+                    if (!TriangleHit(origin, direction, a, b, c, nearest, distance)) continue;
+                    float transmission = instance.previousScale.w;
+                    if (transmission > 0)
                     {
-                        nearest = distance; reflectivity = instance.previousPosition.w; found = true;
+                        if (!WithinDetectionRange(distance, instance.previousPosition.w, ray.direction.w)) continue;
+                        float3 normal = normalize(cross(b - a, c - a) / scale);
+                        float incidence = saturate(abs(dot(normal, direction * scale)));
+                        float probability = TransparentReturnProbability(transmission, instance.scale.w,
+                            instance.previousPosition.w, incidence, distance, ray.direction.w);
+                        if (!AcceptReturn(probability, ray.direction.xyz, ray.origin.w)) continue;
                     }
+                    nearest = distance; reflectivity = instance.previousPosition.w; found = true;
                 }
                 m = (int)meshNode.links.x;
             }
         }
         n = (int)node.links.x;
     }
-    _Ranges[id.x] = found && nearest >= _MinRange ? float2(nearest,reflectivity) : float2(-1,0);
+    _Ranges[id.x] = found && nearest >= _MinRange && WithinDetectionRange(nearest, reflectivity, ray.direction.w)
+        ? float2(nearest, reflectivity) : float2(-1,0);
 }

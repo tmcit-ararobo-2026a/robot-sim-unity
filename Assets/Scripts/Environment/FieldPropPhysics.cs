@@ -20,7 +20,7 @@ namespace RobotSim.Environment
             return mass > 0f;
         }
 
-        public static Rigidbody MakeMovable(GameObject geometry, float mass)
+        public static Rigidbody MakeMovable(GameObject geometry, float mass, bool useGeometryAsBody = false)
         {
             var existing = geometry.GetComponent<Rigidbody>();
             if (existing != null)
@@ -36,13 +36,17 @@ namespace RobotSim.Environment
 
             // Imported vertices are in field coordinates. Put the body origin at the prop
             // rather than at the field origin, preserving the rendered mesh's world pose.
-            var root = new GameObject(propName);
-            SceneManager.MoveGameObjectToScene(root, geometry.scene);
-            root.transform.SetParent(geometry.transform.parent, false);
-            root.transform.SetPositionAndRotation(geometry.transform.TransformPoint(bounds.center), geometry.transform.rotation);
-            root.transform.localScale = geometry.transform.localScale;
-            geometry.transform.SetParent(root.transform, true);
-            geometry.name = "Geometry";
+            var root = geometry;
+            if (!useGeometryAsBody)
+            {
+                root = new GameObject(propName);
+                SceneManager.MoveGameObjectToScene(root, geometry.scene);
+                root.transform.SetParent(geometry.transform.parent, false);
+                root.transform.SetPositionAndRotation(geometry.transform.TransformPoint(bounds.center), geometry.transform.rotation);
+                root.transform.localScale = geometry.transform.localScale;
+                geometry.transform.SetParent(root.transform, true);
+                geometry.name = "Geometry";
+            }
             geometry.isStatic = false;
             foreach (var collider in geometry.GetComponents<Collider>())
             {
@@ -51,7 +55,7 @@ namespace RobotSim.Environment
                 else UnityEngine.Object.DestroyImmediate(collider);
             }
 
-            if (!CompactBoxColliders.TryBuild(root, mesh, true))
+            if (!CompactBoxColliders.TryBuild(root, mesh, centered: !useGeometryAsBody))
             {
                 if (propName.Contains("platform")) Box(root, new Bounds(Vector3.zero, bounds.size));
                 else if (propName.StartsWith("bucket", StringComparison.Ordinal)) BuildBucket(root.transform, bounds.size);
