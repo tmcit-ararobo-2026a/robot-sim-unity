@@ -644,7 +644,7 @@ namespace RobotSim.Sensors
         private void PublishPointCloud(ScanFrame scan, Action<sensor_msgs.msg.PointCloud2> send)
         {
             var cloud = BuildRawPointCloud(scan.Returns, _rayDirLivoxRos, scan.StartIndex,
-                scan.EndTime, frameId, scan.ReturnOffset, scan.PointCount);
+                scan.EndTime - scan.Period, frameId, scan.ReturnOffset, scan.PointCount);
             send(cloud);
             LastPublishedScanEndTimeSec = scan.EndTime - 1.0 / PointRate;
             LastScanDeliveryDelaySec = Math.Max(0, CurrentSimTimeSec - LastPublishedScanEndTimeSec);
