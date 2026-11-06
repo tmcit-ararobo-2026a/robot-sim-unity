@@ -11,7 +11,14 @@ namespace RobotSim.Opponent
         [SerializeField] private string parentFrame = "map";
         [SerializeField] private string childFrame = "opponent_bucket_gt";
         [SerializeField] private float publishRateHz = 20.0f;
+        // The ego robot owns base_link, so the opponent needs distinct frame names.
+        [SerializeField] private string baseFrame = "opponent_base_link";
+        [SerializeField] private string bucketOpeningFrame = "opponent_bucket_opening";
+        [SerializeField] private string bucketBottomFrame = "opponent_bucket_bottom";
 
+        private Transform _base;
+        private Vector3 _openingLocal;
+        private Vector3 _bottomLocal;
         private ROS2UnityComponent _ros2Unity;
         private ROS2Node _node;
         private IPublisher<tf2_msgs.msg.TFMessage> _pubTf;
@@ -21,6 +28,19 @@ namespace RobotSim.Opponent
 
         private void Start()
         {
+            var controller = GetComponentInParent<OpponentRobotController>();
+            var meshFilter = GetComponent<MeshFilter>();
+            if (controller == null || meshFilter == null || meshFilter.sharedMesh == null)
+            {
+                Debug.LogError("[OpponentGroundTruthPublisher] Must be on a bucket mesh under OpponentRobotController.", this);
+                enabled = false;
+                return;
+            }
+
+            _base = controller.transform;
+            Bounds bounds = meshFilter.sharedMesh.bounds;
+            _openingLocal = bounds.center + Vector3.up * bounds.extents.y;
+            _bottomLocal = bounds.center - Vector3.up * bounds.extents.y;
             InitROS2();
         }
 
@@ -62,27 +82,28 @@ namespace RobotSim.Opponent
             double rosY = -uPos.x;
             double rosZ = uPos.y;
 
-            Quaternion rosRot = new Quaternion(-uRot.z, uRot.x, -uRot.y, uRot.w);
+            Quaternion rosRot = ToRos(uRot);
 
             LivoxMid360Sim.GetSimTime(out int sec, out uint nanosec);
 
             // 1. TF Message
             var tfMsg = new tf2_msgs.msg.TFMessage();
-            var transformStamped = new geometry_msgs.msg.TransformStamped();
-            transformStamped.Header.Stamp.Sec = sec;
-            transformStamped.Header.Stamp.Nanosec = nanosec;
-            transformStamped.Header.Frame_id = parentFrame;
-            transformStamped.Child_frame_id = childFrame;
+            var transformStamped = CreateTransform(parentFrame, childFrame, ToRos(uPos), rosRot, sec, nanosec);
 
-            transformStamped.Transform.Translation.X = rosX;
-            transformStamped.Transform.Translation.Y = rosY;
-            transformStamped.Transform.Translation.Z = rosZ;
-            transformStamped.Transform.Rotation.X = rosRot.x;
-            transformStamped.Transform.Rotation.Y = rosRot.y;
-            transformStamped.Transform.Rotation.Z = rosRot.z;
-            transformStamped.Transform.Rotation.W = rosRot.w;
+            Vector3 basePos = _base.position;
+            Quaternion baseRot = _base.rotation;
+            Quaternion baseInverse = Quaternion.Inverse(baseRot);
+            Quaternion bucketInBase = baseInverse * uRot;
+            Vector3 opening = baseInverse * (transform.TransformPoint(_openingLocal) - basePos);
+            Vector3 bottom = baseInverse * (transform.TransformPoint(_bottomLocal) - basePos);
 
-            tfMsg.Transforms = new[] { transformStamped };
+            tfMsg.Transforms = new[]
+            {
+                transformStamped,
+                CreateTransform(parentFrame, baseFrame, ToRos(basePos), ToRos(baseRot), sec, nanosec),
+                CreateTransform(baseFrame, bucketOpeningFrame, ToRos(opening), ToRos(bucketInBase), sec, nanosec),
+                CreateTransform(baseFrame, bucketBottomFrame, ToRos(bottom), ToRos(bucketInBase), sec, nanosec),
+            };
             _pubTf.Publish(tfMsg);
 
             // 2. PoseStamped
@@ -101,6 +122,28 @@ namespace RobotSim.Opponent
                 poseMsg.Pose.Orientation.W = rosRot.w;
                 _pubPose.Publish(poseMsg);
             }
+        }
+
+        private static Vector3 ToRos(Vector3 unity) => new Vector3(unity.z, -unity.x, unity.y);
+
+        private static Quaternion ToRos(Quaternion unity) => new Quaternion(-unity.z, unity.x, -unity.y, unity.w);
+
+        private static geometry_msgs.msg.TransformStamped CreateTransform(
+            string parent, string child, Vector3 rosPosition, Quaternion rosRotation, int sec, uint nanosec)
+        {
+            var message = new geometry_msgs.msg.TransformStamped();
+            message.Header.Stamp.Sec = sec;
+            message.Header.Stamp.Nanosec = nanosec;
+            message.Header.Frame_id = parent;
+            message.Child_frame_id = child;
+            message.Transform.Translation.X = rosPosition.x;
+            message.Transform.Translation.Y = rosPosition.y;
+            message.Transform.Translation.Z = rosPosition.z;
+            message.Transform.Rotation.X = rosRotation.x;
+            message.Transform.Rotation.Y = rosRotation.y;
+            message.Transform.Rotation.Z = rosRotation.z;
+            message.Transform.Rotation.W = rosRotation.w;
+            return message;
         }
     }
 }
