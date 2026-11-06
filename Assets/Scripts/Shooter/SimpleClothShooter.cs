@@ -13,6 +13,13 @@ namespace RobotSim.Shooter
         [SerializeField] private GameObject clothPrefab;
         [SerializeField] private float defaultSpeedRatio = 0.4f;
 
+        [Header("Ballistic Model (gn10-navigation compatible)")]
+        [Tooltip("Ballistic conversion scale: v_belt = scale * v0 + offset")]
+        [SerializeField] private float velocityScale = 0.6806f;
+        [SerializeField] private float velocityOffset = -0.0726f;
+        [SerializeField] private float minReleaseVelocity = 2.0f;
+        [SerializeField] private float maxReleaseVelocity = 14.0f;
+
         public static bool IsClothFlying
         {
             get
@@ -81,14 +88,29 @@ namespace RobotSim.Shooter
 
         private ROS2UnityComponent _ros2Unity;
         private ROS2Node _node;
+
+        // Subscriptions
         private ISubscription<std_msgs.msg.Bool> _subThrow;
         private ISubscription<std_msgs.msg.Float32> _subSpeedRatio;
         private ISubscription<geometry_msgs.msg.Twist> _subReleaseTwist;
         private ISubscription<std_msgs.msg.Bool> _subResetCloth;
+        private ISubscription<std_msgs.msg.Float32> _subBeltLauncherSpeedOp;
+        private ISubscription<std_msgs.msg.Float32> _subBeltLauncherSpeedRobot;
+
+        // Publishers for ROS 2 / mainboard telemetry parity
+        private IPublisher<std_msgs.msg.UInt8> _pubShotCount;
+        private IPublisher<std_msgs.msg.Float32> _pubBeltVelocity;
+        private IPublisher<std_msgs.msg.Float32> _pubBeltTarget;
 
         private float _currentSpeedRatio = 0.5f;
+        private float _currentBeltLauncherSpeed = 0f;
+        private bool _hasBeltLauncherSpeed = false;
+        private byte _shotCount = 0;
         private bool _lastThrowState = false;
         private volatile bool _pendingReset = false;
+
+        public float CurrentBeltLauncherSpeed => _currentBeltLauncherSpeed;
+        public byte ShotCount => _shotCount;
 
         private static readonly (float level, float speed_ratio, float release_velocity, float flight_distance)[] MEASURED_LUT = new[]
         {
@@ -122,12 +144,32 @@ namespace RobotSim.Shooter
             if (_ros2Unity != null && _ros2Unity.Ok())
             {
                 _node = _ros2Unity.CreateNode("cloth_shooter_sim");
+
+                // Legacy subscriptions
                 _subThrow = _node.CreateSubscription<std_msgs.msg.Bool>("/belt/throw", OnThrowMsg);
                 _subSpeedRatio = _node.CreateSubscription<std_msgs.msg.Float32>("/belt/speed_ratio", msg => _currentSpeedRatio = Mathf.Clamp01(msg.Data));
                 _subReleaseTwist = _node.CreateSubscription<geometry_msgs.msg.Twist>("/launcher/release_twist", OnReleaseTwistMsg);
                 _subResetCloth = _node.CreateSubscription<std_msgs.msg.Bool>("/reset_cloth", msg => { if (msg.Data) TriggerReset(); });
-                Debug.Log("[SimpleClothShooter] Subscribed to /belt/throw, /belt/speed_ratio, /launcher/release_twist, /reset_cloth");
+
+                // gn10-navigation belt launcher speed subscriptions
+                _subBeltLauncherSpeedOp = _node.CreateSubscription<std_msgs.msg.Float32>(
+                    "/robot/operation/belt_launcher_speed", OnBeltLauncherSpeedMsg);
+                _subBeltLauncherSpeedRobot = _node.CreateSubscription<std_msgs.msg.Float32>(
+                    "/robot/belt_launcher_speed", OnBeltLauncherSpeedMsg);
+
+                // Telemetry feedback publishers
+                _pubShotCount = _node.CreatePublisher<std_msgs.msg.UInt8>("/robot/feedback/shot_count");
+                _pubBeltVelocity = _node.CreatePublisher<std_msgs.msg.Float32>("/robot/feedback/belt_launcher/velocity");
+                _pubBeltTarget = _node.CreatePublisher<std_msgs.msg.Float32>("/robot/feedback/belt_launcher/target");
+
+                Debug.Log("[SimpleClothShooter] Subscribed to /robot/operation/belt_launcher_speed, /belt/throw, etc.");
             }
+        }
+
+        private void OnBeltLauncherSpeedMsg(std_msgs.msg.Float32 msg)
+        {
+            _currentBeltLauncherSpeed = Mathf.Max(0f, msg.Data);
+            _hasBeltLauncherSpeed = true;
         }
 
         private void TriggerReset()
@@ -139,7 +181,17 @@ namespace RobotSim.Shooter
             _pendingReset = true;
         }
 
-        private void StartBallisticFlight(float speedRatio, Vector3? customLocalVel)
+        public float BeltSpeedToBallisticVelocity(float vBelt)
+        {
+            if (Mathf.Abs(velocityScale) < 1e-5f)
+            {
+                return Mathf.Clamp(vBelt, minReleaseVelocity, maxReleaseVelocity);
+            }
+            float v0 = (vBelt - velocityOffset) / velocityScale;
+            return Mathf.Clamp(v0, minReleaseVelocity, maxReleaseVelocity);
+        }
+
+        private void StartBallisticFlight(float? customReleaseVelocity, float speedRatio, Vector3? customLocalVel)
         {
             var motion = KinematicOmniDrive.GetMotionState();
             Vector3 robotPos = motion.Position;
@@ -148,16 +200,31 @@ namespace RobotSim.Shooter
             Vector3 spawnPos = robotPos + robotRot * new Vector3(0f, 1.52f, 0.90f);
 
             Vector3 worldVel;
+            float releaseVel;
+
             if (customLocalVel.HasValue && customLocalVel.Value.sqrMagnitude > 1e-4f)
             {
                 worldVel = robotRot * customLocalVel.Value;
+                releaseVel = customLocalVel.Value.magnitude;
             }
             else
             {
-                float releaseVelocity = Mathf.Clamp(GetReleaseVelocityFromRatio(speedRatio), 3.0f, 6.5f);
+                if (customReleaseVelocity.HasValue)
+                {
+                    releaseVel = Mathf.Clamp(customReleaseVelocity.Value, minReleaseVelocity, maxReleaseVelocity);
+                }
+                else if (_hasBeltLauncherSpeed && _currentBeltLauncherSpeed > 0.1f)
+                {
+                    releaseVel = BeltSpeedToBallisticVelocity(_currentBeltLauncherSpeed);
+                }
+                else
+                {
+                    releaseVel = Mathf.Clamp(GetReleaseVelocityFromRatio(speedRatio), 3.0f, 6.5f);
+                }
+
                 float pitchRad = launchAngleDeg * Mathf.Deg2Rad;
                 Vector3 localDir = new Vector3(0f, Mathf.Sin(pitchRad), Mathf.Cos(pitchRad)).normalized;
-                worldVel = (robotRot * localDir) * releaseVelocity;
+                worldVel = (robotRot * localDir) * releaseVel;
             }
 
             lock (ClothLock)
@@ -176,13 +243,38 @@ namespace RobotSim.Shooter
                 });
                 _lastClothWorldPos = spawnPos;
             }
+
+            // Publish feedback telemetry
+            _shotCount++;
+            PublishFeedbackTelemetry(releaseVel);
+        }
+
+        private void PublishFeedbackTelemetry(float releaseVel)
+        {
+            if (_node == null) return;
+
+            if (_pubShotCount != null)
+            {
+                _pubShotCount.Publish(new std_msgs.msg.UInt8 { Data = _shotCount });
+            }
+            if (_pubBeltVelocity != null)
+            {
+                float reportedBeltSpeed = (_currentBeltLauncherSpeed > 0.05f)
+                    ? _currentBeltLauncherSpeed
+                    : (velocityScale * releaseVel + velocityOffset);
+                _pubBeltVelocity.Publish(new std_msgs.msg.Float32 { Data = reportedBeltSpeed });
+            }
+            if (_pubBeltTarget != null)
+            {
+                _pubBeltTarget.Publish(new std_msgs.msg.Float32 { Data = _currentBeltLauncherSpeed });
+            }
         }
 
         private void OnThrowMsg(std_msgs.msg.Bool msg)
         {
             if (msg.Data && !_lastThrowState)
             {
-                StartBallisticFlight(_currentSpeedRatio, null);
+                StartBallisticFlight(null, _currentSpeedRatio, null);
             }
             _lastThrowState = msg.Data;
         }
@@ -190,7 +282,7 @@ namespace RobotSim.Shooter
         private void OnReleaseTwistMsg(geometry_msgs.msg.Twist msg)
         {
             Vector3 unityLocalVel = new Vector3(-(float)msg.Linear.Y, (float)msg.Linear.Z, (float)msg.Linear.X);
-            StartBallisticFlight(_currentSpeedRatio, unityLocalVel.sqrMagnitude > 1e-4f ? unityLocalVel : (Vector3?)null);
+            StartBallisticFlight(null, _currentSpeedRatio, unityLocalVel.sqrMagnitude > 1e-4f ? unityLocalVel : (Vector3?)null);
         }
 
         private void Update()
@@ -206,6 +298,7 @@ namespace RobotSim.Shooter
                 ResetCloths();
             }
 
+            // Space key triggers shoot only if Dashboard is not active or as fallback
             if (Input.GetKeyDown(KeyCode.Space))
             {
                 ShootCloth(_currentSpeedRatio, null);
@@ -284,7 +377,18 @@ namespace RobotSim.Shooter
 
         public void ShootCloth(float speedRatio, Vector3? customLocalVel = null)
         {
-            StartBallisticFlight(speedRatio, customLocalVel);
+            StartBallisticFlight(null, speedRatio, customLocalVel);
+        }
+
+        public void ShootClothWithBeltSpeed(float beltSpeedMs)
+        {
+            float v0 = BeltSpeedToBallisticVelocity(beltSpeedMs);
+            StartBallisticFlight(v0, _currentSpeedRatio, null);
+        }
+
+        public void ShootClothWithBallisticVelocity(float v0)
+        {
+            StartBallisticFlight(v0, _currentSpeedRatio, null);
         }
 
         private static float GetReleaseVelocityFromRatio(float ratio)

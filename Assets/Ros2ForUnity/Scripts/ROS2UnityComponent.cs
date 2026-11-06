@@ -122,6 +122,8 @@ public class ROS2UnityComponent : MonoBehaviour
         }
     }
 
+    private Thread publishThread;
+
     /// <summary>
     /// "Executor" thread will tick all clocks and spin the node
     /// </summary>
@@ -129,16 +131,30 @@ public class ROS2UnityComponent : MonoBehaviour
     {
         while (!quitting)
         {
-            if (Ok())
+            try
             {
-                lock (mutex)
+                if (Ok())
                 {
-                    foreach (Action action in executableActions)
+                    lock (mutex)
                     {
-                        action();
+                        for (int i = 0; i < executableActions.Count; i++)
+                        {
+                            try
+                            {
+                                executableActions[i]?.Invoke();
+                            }
+                            catch (Exception ex)
+                            {
+                                Debug.LogError($"[ROS2UnityComponent] Error in action: {ex}");
+                            }
+                        }
+                        Ros2cs.SpinOnce(ros2csNodes, spinTimeout);
                     }
-                    Ros2cs.SpinOnce(ros2csNodes, spinTimeout);
                 }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[ROS2UnityComponent] Error in Tick loop: {ex}");
             }
             Thread.Sleep(interval);
         }
@@ -146,11 +162,18 @@ public class ROS2UnityComponent : MonoBehaviour
 
     void FixedUpdate()
     {
-        if (!initialized)
+        if (publishThread == null || !publishThread.IsAlive)
         {
-            Thread publishThread = new Thread(() => Tick());
-            publishThread.Start();
-            initialized = true;
+            if (!quitting)
+            {
+                publishThread = new Thread(() => Tick())
+                {
+                    IsBackground = true,
+                    Name = "ROS2UnityExecutorThread"
+                };
+                publishThread.Start();
+                initialized = true;
+            }
         }
     }
 

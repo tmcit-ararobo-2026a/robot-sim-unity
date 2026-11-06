@@ -1785,7 +1785,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   topic: /lakibeam/scan
   frameId: lakibeam_frame
-  scanRateHz: 20
+  scanRateHz: 30
   minAngleDeg: -180
   maxAngleDeg: 180
   numBeams: 1080
@@ -10083,6 +10083,8 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   shooter: {fileID: 0}
   robotTransform: {fileID: 0}
+  publishInterval: 0.05
+  operationTimeoutSec: 0.2
 --- !u!114 &969582125
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -16629,7 +16631,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   frameId: livox_frame
-  pointCloudPublishRateHz: 10
+  pointCloudPublishRateHz: 50
   imuPublishRateHz: 200
   simulateMotionDistortion: 1
   useGpu: 1
@@ -19052,6 +19054,10 @@ MonoBehaviour:
   launchAngleDeg: 22
   clothPrefab: {fileID: 751482418841489513, guid: 05919020956cbe3bb89eaa7ecb449eda, type: 3}
   defaultSpeedRatio: 0.4
+  velocityScale: 0.6806
+  velocityOffset: -0.0726
+  minReleaseVelocity: 2
+  maxReleaseVelocity: 14
 --- !u!1001 &1802752465
 PrefabInstance:
   m_ObjectHideFlags: 0

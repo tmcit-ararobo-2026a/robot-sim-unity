@@ -359,8 +359,8 @@ namespace RobotSim.Sensors
             Slot slot = _slots.Find(s => !s.Busy);
             if (slot == null)
             {
-                // Bound catch-up memory without dropping or resampling old intervals.
-                if (_slots.Count >= 64) { _pending.Peek().Request.WaitForCompletion(); PollReadback(); slot = _slots.Find(s => !s.Busy); }
+                // Bound latency and catch-up memory (4 slots = 40ms max delay at 100Hz physics).
+                if (_slots.Count >= 4) { _pending.Peek().Request.WaitForCompletion(); PollReadback(); slot = _slots.Find(s => !s.Busy); }
                 if (slot == null) { slot = new Slot(); _slots.Add(slot); }
             }
             try
