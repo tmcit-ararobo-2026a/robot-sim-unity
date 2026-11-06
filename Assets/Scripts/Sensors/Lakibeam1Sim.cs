@@ -20,8 +20,8 @@ namespace RobotSim.Sensors
         [SerializeField] private string frameId = "lakibeam_frame";
 
         [Header("LiDAR Specs")]
-        [Tooltip("Scan publish rate in Hz. Default is 20 Hz (0.05s period).")]
-        [SerializeField, Range(1f, 50f)] private float scanRateHz = 20.0f;
+        [Tooltip("Scan publish rate in Hz. Default is 30 Hz (0.0333s period).")]
+        [SerializeField, Range(1f, 50f)] private float scanRateHz = 30.0f;
         [Tooltip("Minimum angle in degrees (-180 = backward/front in sensor frame).")]
         [SerializeField] private float minAngleDeg = -180.0f;
         [Tooltip("Maximum angle in degrees (+180 = full 360 deg FOV).")]

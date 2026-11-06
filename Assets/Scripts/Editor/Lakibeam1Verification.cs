@@ -44,11 +44,11 @@ namespace RobotSim.Editor
                 var sensor = sensorObj.AddComponent<Lakibeam1Sim>();
                 Assert(sensor.Topic == "/lakibeam/scan", $"Topic mismatch: {sensor.Topic}");
                 Assert(sensor.FrameId == "lakibeam_frame", $"FrameId mismatch: {sensor.FrameId}");
-                Assert(sensor.ScanRateHz == 20.0f, $"ScanRateHz mismatch: {sensor.ScanRateHz}");
+                Assert(sensor.ScanRateHz == 30.0f, $"ScanRateHz mismatch: {sensor.ScanRateHz}");
                 Assert(sensor.NumBeams == 1080, $"NumBeams mismatch: {sensor.NumBeams}");
 
                 // 2. Test Raycast acquisition
-                sensor.AcquireAndPublishScan(10.0, 0.05);
+                sensor.AcquireAndPublishScan(10.0, 1.0 / 30.0);
 
                 // Use reflection or check private ranges
                 var rangeProp = typeof(Lakibeam1Sim).GetField("_ranges", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);

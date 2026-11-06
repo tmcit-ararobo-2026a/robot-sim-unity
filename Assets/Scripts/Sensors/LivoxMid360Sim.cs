@@ -27,7 +27,7 @@ namespace RobotSim.Sensors
 
         [Header("Publishing Rates")]
         [Tooltip("PointCloud2 messages per simulation second (0.1–100 Hz). The 200,000 raw samples/s budget is divided between messages; time-resolved mesh poses update at the physics rate.")]
-        [SerializeField, Range(0.1f, MaxPointCloudPublishRateHz)] private float pointCloudPublishRateHz = 10f;
+        [SerializeField, Range(0.1f, MaxPointCloudPublishRateHz)] private float pointCloudPublishRateHz = 50f;
         [Tooltip("IMU measurements per simulation second (0.1–500 Hz). Changes also apply during Play mode. Completed measurements are sent without an additional delivery buffer; timestamps are preserved.")]
         [SerializeField, Range(0.1f, MaxImuPublishRateHz)] private float imuPublishRateHz = 200f;
 
@@ -96,7 +96,7 @@ namespace RobotSim.Sensors
         public int PendingImuCount { get { lock (_imuLock) return _completedImus.Count; } }
         public int PendingScanCount { get { lock (_scanLock) return _completedScans.Count; } }
         public int PendingGpuIntervalCount => _temporalScene?.PendingCount ?? 0;
-        public float PointCloudPublishRateHz => NormalizePublishRate(pointCloudPublishRateHz, 10f, MaxPointCloudPublishRateHz);
+        public float PointCloudPublishRateHz => NormalizePublishRate(pointCloudPublishRateHz, 50f, MaxPointCloudPublishRateHz);
         public float ImuPublishRateHz => _requestedImuRateHz;
 
         private static float NormalizePublishRate(float hz, float fallback, float maximum)
@@ -107,7 +107,7 @@ namespace RobotSim.Sensors
 
         private void OnValidate()
         {
-            pointCloudPublishRateHz = NormalizePublishRate(pointCloudPublishRateHz, 10f, MaxPointCloudPublishRateHz);
+            pointCloudPublishRateHz = NormalizePublishRate(pointCloudPublishRateHz, 50f, MaxPointCloudPublishRateHz);
             imuPublishRateHz = NormalizePublishRate(imuPublishRateHz, 200f, MaxImuPublishRateHz);
             // The ROS executor reads only this managed value; never a Unity API.
             _requestedImuRateHz = imuPublishRateHz;
@@ -115,7 +115,7 @@ namespace RobotSim.Sensors
 
         public static int CalculateScanPointCount(float publishRateHz, ref double fractionalPoints)
         {
-            double budget = PointRate / (double)NormalizePublishRate(publishRateHz, 10f, MaxPointCloudPublishRateHz) + fractionalPoints;
+            double budget = PointRate / (double)NormalizePublishRate(publishRateHz, 50f, MaxPointCloudPublishRateHz) + fractionalPoints;
             int count = (int)Math.Floor(budget + 1e-9);
             fractionalPoints = Math.Max(0, budget - count);
             return count;
@@ -306,18 +306,29 @@ namespace RobotSim.Sensors
         private void LateUpdate()
         {
             _temporalScene?.PollReadback();
-            if (_sceneSampler == null) return;
-            _sceneSampler.PollReadback();
-            if (_sceneSampler.IsBusy || _cloudPub == null || _totalRays == 0) return;
-            double now = CurrentSimTimeSec;
-            float hz = PointCloudPublishRateHz;
-            if (_nextScanTime <= 0 || hz != _activePointCloudRateHz)
+            if (_sceneSampler != null)
             {
-                _activePointCloudRateHz = hz;
-                _fractionalScanPoints = 0;
-                ScheduleNextScan(now, hz);
+                _sceneSampler.PollReadback();
+                if (!_sceneSampler.IsBusy && _cloudPub != null && _totalRays != 0)
+                {
+                    double now = CurrentSimTimeSec;
+                    float hz = PointCloudPublishRateHz;
+                    if (_nextScanTime <= 0 || hz != _activePointCloudRateHz)
+                    {
+                        _activePointCloudRateHz = hz;
+                        _fractionalScanPoints = 0;
+                        ScheduleNextScan(now, hz);
+                    }
+                    if (now + 1e-9 >= _nextScanTime) CaptureScheduledScans(now, hz);
+                }
             }
-            if (now + 1e-9 >= _nextScanTime) CaptureScheduledScans(now, hz);
+
+            // Fallback drain: ensure ready scans and IMU measurements are published even if
+            // the background thread is delayed or temporarily suspended.
+            if (_cloudPub != null && _imuPub != null)
+            {
+                PublishReadyMeasurements(CurrentSimTimeSec, _sendImu, _sendCloud);
+            }
         }
 
         private void CaptureScheduledScans(double now, float hz)
@@ -633,7 +644,7 @@ namespace RobotSim.Sensors
         private void PublishPointCloud(ScanFrame scan, Action<sensor_msgs.msg.PointCloud2> send)
         {
             var cloud = BuildRawPointCloud(scan.Returns, _rayDirLivoxRos, scan.StartIndex,
-                scan.EndTime - scan.Period, frameId, scan.ReturnOffset, scan.PointCount);
+                scan.EndTime, frameId, scan.ReturnOffset, scan.PointCount);
             send(cloud);
             LastPublishedScanEndTimeSec = scan.EndTime - 1.0 / PointRate;
             LastScanDeliveryDelaySec = Math.Max(0, CurrentSimTimeSec - LastPublishedScanEndTimeSec);
